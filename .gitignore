@@ -1,0 +1,70 @@
+# ---- Unity ----
+# Auto-generated / cache folders (never commit these). Patterns are unanchored
+# so they match the Unity project inside frontend_unity/ as well.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Asset meta data should only be ignored when the corresponding asset is also ignored
+!/[Aa]ssets/**/*.meta
+
+# UMA is a 3rd-party Asset Store package (UMA 2.14) - every dev imports it themselves.
+# Do NOT commit it (hundreds of MB + licensed). See frontend_unity/SETUP.md for setup.
+# NOTE: use **/ so it matches the nested frontend_unity/Assets/UMA (a slash in the
+# pattern would otherwise anchor it to the repo root and NOT match).
+**/[Aa]ssets/UMA/
+**/[Aa]ssets/UMA.meta
+
+# Unity3D generated file on crash reports
+sysinfo.txt
+
+# Builds
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Gradle cache directory
+.gradle/
+
+# Visual Studio / Rider caches
+.vs/
+.vscode/
+*.csproj
+*.unityproj
+*.sln
+*.slnx
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# ---- Python (backend) ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+# SQLite-Cache (Block B) - lokale Laufzeitdaten, nicht committen
+backend_python/avatars.db
+*.sqlite3
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- 本地交接文档 (不推送到远端) ----
+PROJECT_STATUS.md
