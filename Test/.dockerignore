@@ -1,0 +1,9 @@
+.idea
+**/.DS_Store
+**/.venv
+**/__pycache__
+**/.matplotlib-cache
+backend_python/hf_generated_models
+frontend_unity
+launcher.py
+Start.command

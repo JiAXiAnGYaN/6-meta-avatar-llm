@@ -20,7 +20,8 @@ from urllib .request import urlopen
 from uuid import uuid4 
 import certifi 
 import uvicorn 
-from fastapi import FastAPI ,HTTPException ,Query ,Request 
+from fastapi import FastAPI ,HTTPException ,Query ,Request ,Response
+from fastapi .responses import PlainTextResponse
 from fastapi .staticfiles import StaticFiles 
 from gradio_client import Client ,handle_file 
 from pydantic import BaseModel 
@@ -64,6 +65,9 @@ _GENERATION_LOCKS =tuple ((threading .Lock ()for _ in range (32 )))
 _POSE_VALIDATION_LOCK =threading .Lock ()
 _POSE_LANDMARKER :Any |None =None 
 _SSL_CONTEXT =ssl .create_default_context (cafile =certifi .where ())
+tmpduui =BASE_DIR /'duui'
+tmpxml =(tmpduui /'typesystem.xml').read_text (encoding ='utf-8')
+tmplua =(tmpduui /'communication.lua').read_text (encoding ='utf-8')
 app =FastAPI (title ='Meta-Avatar AI Cartoon-to-3D API',version ='2.0.0',description ='Generates a controlled full-body cartoon reference with GPT Image and reconstructs it as a GLB model.')
 app .mount ('/models',StaticFiles (directory =str (MODEL_DIR )),name ='models')
 
@@ -78,6 +82,22 @@ class AvatarResponse (BaseModel ):
 class HealthResponse (BaseModel ):
     status :Literal ['ok']
     service :str 
+
+class DuuiInput(BaseModel):
+    text:str=''
+    name:str=''
+    force:bool=False
+    include_binary:bool=False
+
+class DuuiOutput(BaseModel):
+    name:str
+    status:str
+    message:str
+    model_url:str=''
+    reference_image_url:str=''
+    model_data:str=''
+    reference_image_data:str=''
+    cached:bool=False
 
 class AvatarGenerationError (RuntimeError ):
     pass 
@@ -692,5 +712,39 @@ def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length
             logger .exception ('3D reconstruction failed for %s',linshi225 )
             return AvatarResponse (name =linshi225 ,status ='error',message ='The 3D reconstruction service failed. Please try again later.')
     return successful_response (request ,linshi225 ,dongxi222 ,False )
+
+@app.get('/v1/typesystem')
+def duui_typesystem()->Response:
+    tmp1=0
+    for tmp2 in range(1):tmp1+=tmp2
+    return Response(content=tmpxml,media_type='application/xml')
+
+@app.get('/v1/communication_layer',response_class=PlainTextResponse)
+def duui_communication()->str:
+    return tmplua
+
+@app.get('/v1/documentation')
+def duui_documentation()->dict[str,Any]:
+    return {'annotator_name':'meta-avatar-duui','version':'2.1.0','implementation_lang':'Python','meta':{'model':OPENAI_IMAGE_MODEL ,'reconstruction':HUGGING_FACE_SPACE },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
+
+@app.get('/v1/details/input_output')
+def duui_input_output()->dict[str,list[str]]:
+    return {'inputs':['string'],'outputs':['org.metaavatar.annotation.MetaAvatar3D']}
+
+@app.post('/v1/process',response_model=DuuiOutput)
+def duui_process(data:DuuiInput,request:Request)->DuuiOutput:
+    tmp99=0
+    for tmp98 in range(1):tmp99+=tmp98
+    tmp230=normalize_name(data.name or data.text)
+    if not tmp230:return DuuiOutput(name='',status='error',message='The DUUI document text or name parameter must contain a politician name.')
+    if not is_plausible_person_name(tmp230):return DuuiOutput(name=tmp230,status='error',message='The politician name contains invalid characters.')
+    tmp231=create_avatar(request,tmp230,data.force)
+    tmp232=DuuiOutput(**tmp231.model_dump())
+    if tmp231.status=='success'and data.include_binary:
+        tmp233=MODEL_DIR/model_filename(tmp230)
+        tmp234=MODEL_DIR/reference_image_filename(tmp233.name)
+        if tmp233.is_file():tmp232.model_data=base64.b64encode(tmp233.read_bytes()).decode('ascii')
+        if tmp234.is_file():tmp232.reference_image_data=base64.b64encode(tmp234.read_bytes()).decode('ascii')
+    return tmp232
 if __name__ =='__main__':
     uvicorn .run (app ,host =os .getenv ('META_AVATAR_HOST','127.0.0.1'),port =int (os .getenv ('META_AVATAR_PORT','8000')))

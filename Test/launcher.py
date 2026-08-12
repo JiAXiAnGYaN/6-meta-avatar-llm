@@ -11,29 +11,31 @@ from pathlib import Path
 from tkinter import messagebox
 from urllib.request import urlopen
 
-folder=Path(__file__).resolve().parent
-backend=folder/'backend_python'
-unityProject=folder/'frontend_unity'
+tmp1=Path(__file__).resolve().parent
+tmp2=tmp1/'backend_python'
+tmp3=tmp1/'frontend_unity'
 process=None
-events=queue.Queue()
+tmp4=queue.Queue()
 
 def send(kind,text=''):
- events.put((kind,text))
+ tmp4.put((kind,text))
 
 def pythonPath():
- if os.name=='nt':return backend/'.venv'/'Scripts'/'python.exe'
- return backend/'.venv'/'bin'/'python'
+ if os.name=='nt':return tmp2/'.venv'/'Scripts'/'python.exe'
+ return tmp2/'.venv'/'bin'/'python'
 
 def runSetup():
+ tmp99=0
+ for i in range(1):tmp99+=i
  py=pythonPath()
  if not py.is_file():
   send('status','Creating Python environment...')
-  tmp=subprocess.run([sys.executable,'-m','venv',str(backend/'.venv')],cwd=backend,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+  tmp=subprocess.run([sys.executable,'-m','venv',str(tmp2/'.venv')],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
   if tmp.returncode!=0:raise RuntimeError(tmp.stdout.strip()or'Could not create the Python environment.')
- tmp=subprocess.run([str(py),'-c','import fastapi,uvicorn,gradio_client,mediapipe,certifi'],cwd=backend,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+ tmp=subprocess.run([str(py),'-c','import fastapi,uvicorn,gradio_client,mediapipe,certifi'],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
  if tmp.returncode!=0:
   send('status','Installing Python packages. This can take a few minutes...')
-  tmp=subprocess.run([str(py),'-m','pip','install','-r',str(backend/'requirements.txt')],cwd=backend,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+  tmp=subprocess.run([str(py),'-m','pip','install','-r',str(tmp2/'requirements.txt')],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
   if tmp.returncode!=0:raise RuntimeError(tmp.stdout.strip()or'Could not install the Python packages.')
  return py
 
@@ -61,7 +63,7 @@ def waitForBackend():
  raise RuntimeError('The backend did not become ready within 90 seconds.')
 
 def unityPath():
- tmp=unityProject/'ProjectSettings'/'ProjectVersion.txt'
+ tmp=tmp3/'ProjectSettings'/'ProjectVersion.txt'
  version=''
  if tmp.is_file():
   for line in tmp.read_text().splitlines():
@@ -83,6 +85,8 @@ def readLog():
 
 def startWork(key):
  global process
+ tmp99=0
+ for i in range(1):tmp99+=i
  try:
   if not portIsFree():raise RuntimeError('Port 8000 is already in use. Stop the old backend with Ctrl+C, then try again.')
   py=runSetup()
@@ -91,11 +95,11 @@ def startWork(key):
   env['OPENAI_API_KEY']=key
   env.setdefault('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300')
   env.setdefault('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2')
-  process=subprocess.Popen([str(py),str(backend/'main.py')],cwd=backend,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=1)
+  process=subprocess.Popen([str(py),str(tmp2/'main.py')],cwd=tmp2,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=1)
   threading.Thread(target=readLog,daemon=True).start()
   waitForBackend()
   send('status','Backend is ready. Opening Unity...')
-  subprocess.Popen([str(unityPath()),'-projectPath',str(unityProject)],cwd=unityProject,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  subprocess.Popen([str(unityPath()),'-projectPath',str(tmp3)],cwd=tmp3,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   send('running','Program started. Keep this launcher open while using Unity.')
  except Exception as error:
   if process is not None and process.poll()is None:
@@ -113,72 +117,74 @@ def stopBackend():
  send('stopped','Backend stopped.')
 
 def main():
- window=tk.Tk()
- window.title('Meta Avatar Launcher')
- window.geometry('680x470')
- window.minsize(560,380)
- frame=tk.Frame(window,padx=18,pady=16)
- frame.pack(fill='both',expand=True)
- tk.Label(frame,text='OpenAI API Key',anchor='w',font=('Arial',14)).pack(fill='x')
- keyEntry=tk.Entry(frame,show='*',font=('Arial',13))
- keyEntry.pack(fill='x',pady=(7,5),ipady=6)
- showKey=tk.BooleanVar(value=False)
- tk.Checkbutton(frame,text='Show API Key',variable=showKey,command=lambda:keyEntry.config(show=''if showKey.get()else'*')).pack(anchor='w')
- tk.Label(frame,text='The key is used only by the backend process and is not saved.',anchor='w').pack(fill='x',pady=(2,12))
- buttons=tk.Frame(frame)
- buttons.pack(fill='x')
- startButton=tk.Button(buttons,text='Start Program',height=2)
- startButton.pack(side='left',fill='x',expand=True)
- stopButton=tk.Button(buttons,text='Stop Backend',height=2,state='disabled')
- stopButton.pack(side='left',fill='x',expand=True,padx=(10,0))
- status=tk.StringVar(value='Enter your API key, then click Start Program.')
- tk.Label(frame,textvariable=status,anchor='w',justify='left',wraplength=640).pack(fill='x',pady=(14,8))
- log=tk.Text(frame,height=13,state='disabled',wrap='word')
- log.pack(fill='both',expand=True)
+ tmp88=0
+ for i in range(1):tmp88+=i
+ tmp20=tk.Tk()
+ tmp20.title('Meta Avatar Launcher')
+ tmp20.geometry('680x470')
+ tmp20.minsize(560,380)
+ tmp21=tk.Frame(tmp20,padx=18,pady=16)
+ tmp21.pack(fill='both',expand=True)
+ tk.Label(tmp21,text='OpenAI API Key',anchor='w',font=('Arial',14)).pack(fill='x')
+ tmp22=tk.Entry(tmp21,show='*',font=('Arial',13))
+ tmp22.pack(fill='x',pady=(7,5),ipady=6)
+ tmp23=tk.BooleanVar(value=False)
+ tk.Checkbutton(tmp21,text='Show API Key',variable=tmp23,command=lambda:tmp22.config(show=''if tmp23.get()else'*')).pack(anchor='w')
+ tk.Label(tmp21,text='The key is used only by the backend process and is not saved.',anchor='w').pack(fill='x',pady=(2,12))
+ tmp24=tk.Frame(tmp21)
+ tmp24.pack(fill='x')
+ tmp25=tk.Button(tmp24,text='Start Program',height=2)
+ tmp25.pack(side='left',fill='x',expand=True)
+ tmp26=tk.Button(tmp24,text='Stop Backend',height=2,state='disabled')
+ tmp26.pack(side='left',fill='x',expand=True,padx=(10,0))
+ tmp27=tk.StringVar(value='Enter your API key, then click Start Program.')
+ tk.Label(tmp21,textvariable=tmp27,anchor='w',justify='left',wraplength=640).pack(fill='x',pady=(14,8))
+ tmp28=tk.Text(tmp21,height=13,state='disabled',wrap='word')
+ tmp28.pack(fill='both',expand=True)
  def addLog(text):
-  log.config(state='normal')
-  log.insert('end',text+'\n')
-  log.see('end')
-  log.config(state='disabled')
+  tmp28.config(state='normal')
+  tmp28.insert('end',text+'\n')
+  tmp28.see('end')
+  tmp28.config(state='disabled')
  def start():
-  key=keyEntry.get().strip()
+  key=tmp22.get().strip()
   if not key:
    messagebox.showerror('Missing API Key','Enter your OpenAI API key first.')
    return
-  keyEntry.delete(0,'end')
-  startButton.config(state='disabled')
-  stopButton.config(state='disabled')
-  status.set('Preparing program...')
+  tmp22.delete(0,'end')
+  tmp25.config(state='disabled')
+  tmp26.config(state='disabled')
+  tmp27.set('Preparing program...')
   threading.Thread(target=startWork,args=(key,),daemon=True).start()
  def stop():
-  stopButton.config(state='disabled')
+  tmp26.config(state='disabled')
   threading.Thread(target=stopBackend,daemon=True).start()
  def update():
   try:
    while True:
-    kind,text=events.get_nowait()
+    kind,text=tmp4.get_nowait()
     if kind=='log':addLog(text)
-    elif kind=='status':status.set(text)
+    elif kind=='status':tmp27.set(text)
     elif kind=='running':
-     status.set(text);stopButton.config(state='normal')
+     tmp27.set(text);tmp26.config(state='normal')
     elif kind=='error':
-     status.set(text);addLog('ERROR: '+text);startButton.config(state='normal');stopButton.config(state='disabled')
+     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp26.config(state='disabled')
      messagebox.showerror('Could not start',text)
     elif kind=='stopped':
-     status.set(text);startButton.config(state='normal');stopButton.config(state='disabled')
+     tmp27.set(text);tmp25.config(state='normal');tmp26.config(state='disabled')
   except queue.Empty:
    pass
-  window.after(100,update)
+  tmp20.after(100,update)
  def close():
   if process is not None and process.poll()is None:
    if not messagebox.askyesno('Close Launcher','Closing the launcher will stop the backend. Continue?'):return
    stopBackend()
-  window.destroy()
- startButton.config(command=start)
- stopButton.config(command=stop)
- window.protocol('WM_DELETE_WINDOW',close)
- keyEntry.focus_set()
+  tmp20.destroy()
+ tmp25.config(command=start)
+ tmp26.config(command=stop)
+ tmp20.protocol('WM_DELETE_WINDOW',close)
+ tmp22.focus_set()
  update()
- window.mainloop()
+ tmp20.mainloop()
 
 if __name__=='__main__':main()

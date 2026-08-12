@@ -1,0 +1,15 @@
+services:
+  meta-avatar-duui:
+    build: .
+    image: meta-avatar-duui:latest
+    platform: linux/amd64
+    ports:
+      - "8000:9714"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      META_AVATAR_PUBLIC_BASE_URL: ${META_AVATAR_PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+    volumes:
+      - meta-avatar-models:/data/models
+    restart: unless-stopped
+volumes:
+  meta-avatar-models:

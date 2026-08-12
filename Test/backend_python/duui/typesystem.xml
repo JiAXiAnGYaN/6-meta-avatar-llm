@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<typeSystemDescription xmlns="http://uima.apache.org/resourceSpecifier">
+ <name>MetaAvatar3DTypeSystem</name>
+ <types>
+  <typeDescription>
+   <name>org.metaavatar.annotation.MetaAvatar3D</name>
+   <description/>
+   <supertypeName>uima.tcas.Annotation</supertypeName>
+   <features>
+    <featureDescription><name>name</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>status</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>message</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>modelUrl</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>referenceImageUrl</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>modelData</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>referenceImageData</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>modelMimeType</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>referenceImageMimeType</name><description/><rangeTypeName>uima.cas.String</rangeTypeName></featureDescription>
+    <featureDescription><name>cached</name><description/><rangeTypeName>uima.cas.Boolean</rangeTypeName></featureDescription>
+   </features>
+  </typeDescription>
+ </types>
+</typeSystemDescription>
