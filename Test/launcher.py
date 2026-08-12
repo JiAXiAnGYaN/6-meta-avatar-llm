@@ -20,14 +20,14 @@ tmp4=queue.Queue()
 def send(kind,text=''):
  tmp4.put((kind,text))
 
-def pythonPath():
+def path1():
  if os.name=='nt':return tmp2/'.venv'/'Scripts'/'python.exe'
  return tmp2/'.venv'/'bin'/'python'
 
-def runSetup():
+def setup():
  tmp99=0
  for i in range(1):tmp99+=i
- py=pythonPath()
+ py=path1()
  if not py.is_file():
   send('status','Creating Python environment...')
   tmp=subprocess.run([sys.executable,'-m','venv',str(tmp2/'.venv')],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
@@ -39,7 +39,7 @@ def runSetup():
   if tmp.returncode!=0:raise RuntimeError(tmp.stdout.strip()or'Could not install the Python packages.')
  return py
 
-def portIsFree():
+def check():
  tmp=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
  try:
   tmp.bind(('127.0.0.1',8000))
@@ -49,7 +49,7 @@ def portIsFree():
  finally:
   tmp.close()
 
-def waitForBackend():
+def wait():
  end=time.time()+90
  while time.time()<end:
   if process is None or process.poll()is not None:raise RuntimeError('The backend stopped before startup completed.')
@@ -62,7 +62,7 @@ def waitForBackend():
   time.sleep(.5)
  raise RuntimeError('The backend did not become ready within 90 seconds.')
 
-def unityPath():
+def path2():
  tmp=tmp3/'ProjectSettings'/'ProjectVersion.txt'
  version=''
  if tmp.is_file():
@@ -78,28 +78,28 @@ def unityPath():
   if path.is_file():return path
  raise RuntimeError('Unity '+version+' was not found. Install that version with Unity Hub.')
 
-def readLog():
+def read():
  if process is None or process.stdout is None:return
  for line in process.stdout:
   send('log',line.rstrip())
 
-def startWork(key):
+def run(key):
  global process
  tmp99=0
  for i in range(1):tmp99+=i
  try:
-  if not portIsFree():raise RuntimeError('Port 8000 is already in use. Stop the old backend with Ctrl+C, then try again.')
-  py=runSetup()
+  if not check():raise RuntimeError('Port 8000 is already in use. Stop the old backend with Ctrl+C, then try again.')
+  py=setup()
   send('status','Starting backend...')
   env=os.environ.copy()
   env['OPENAI_API_KEY']=key
   env.setdefault('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300')
   env.setdefault('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2')
   process=subprocess.Popen([str(py),str(tmp2/'main.py')],cwd=tmp2,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=1)
-  threading.Thread(target=readLog,daemon=True).start()
-  waitForBackend()
+  threading.Thread(target=read,daemon=True).start()
+  wait()
   send('status','Backend is ready. Opening Unity...')
-  subprocess.Popen([str(unityPath()),'-projectPath',str(tmp3)],cwd=tmp3,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  subprocess.Popen([str(path2()),'-projectPath',str(tmp3)],cwd=tmp3,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   send('running','Program started. Keep this launcher open while using Unity.')
  except Exception as error:
   if process is not None and process.poll()is None:
@@ -107,7 +107,7 @@ def startWork(key):
   process=None
   send('error',str(error))
 
-def stopBackend():
+def stop2():
  global process
  if process is not None and process.poll()is None:
   process.terminate()
@@ -155,10 +155,10 @@ def main():
   tmp25.config(state='disabled')
   tmp26.config(state='disabled')
   tmp27.set('Preparing program...')
-  threading.Thread(target=startWork,args=(key,),daemon=True).start()
+  threading.Thread(target=run,args=(key,),daemon=True).start()
  def stop():
   tmp26.config(state='disabled')
-  threading.Thread(target=stopBackend,daemon=True).start()
+  threading.Thread(target=stop2,daemon=True).start()
  def update():
   try:
    while True:
@@ -178,7 +178,7 @@ def main():
  def close():
   if process is not None and process.poll()is None:
    if not messagebox.askyesno('Close Launcher','Closing the launcher will stop the backend. Continue?'):return
-   stopBackend()
+   stop2()
   tmp20.destroy()
  tmp25.config(command=start)
  tmp26.config(command=stop)
