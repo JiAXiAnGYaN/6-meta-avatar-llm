@@ -75,10 +75,19 @@ public class AvatarDataFetcher:MonoBehaviour{
    if(!ok||tmp4){update2("The generated GLB could not be added to the scene.");return;}
    if(tmp1!=null){tmp1.SetActive(false);Destroy(tmp1);}
    tmp2?.Dispose();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;
-   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);
-   update2("Ready — drag to rotate, scroll to zoom, press F to refocus.");
+   bool framed=get(tmp1,out Bounds tmp11);
+   AvatarRig.Build(tmp1);
+   EnsureInteractor();
+   if(framed)camera()?.Focus(tmp11);
+   update2("Ready — drag a body part to move it, drag the background to orbit, scroll to zoom, press F to refocus.");
   }catch(Exception e){update2("Unexpected error while loading the generated model.");Debug.LogException(e);}
   finally{if(tmp10!=null)Destroy(tmp10);tmp9?.Dispose();tmp3=false;}
+ }
+ void EnsureInteractor(){
+  AvatarPartInteractor interactor=GetComponent<AvatarPartInteractor>();
+  if(interactor==null)interactor=gameObject.AddComponent<AvatarPartInteractor>();
+  interactor.targetCamera=Camera.main;
+  interactor.orbitCamera=camera();
  }
  void update(string text){if(statusText!=null)statusText.text=text;}
  AvatarOrbitCamera camera(){
