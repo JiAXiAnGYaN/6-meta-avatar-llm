@@ -68,3 +68,7 @@ Thumbs.db
 
 # ---- 本地交接文档 (不推送到远端) ----
 PROJECT_STATUS.md
+
+# ---- 生成的模型与运行缓存 ----
+hf_generated_models/
+.matplotlib-cache/
