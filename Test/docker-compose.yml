@@ -8,6 +8,8 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       META_AVATAR_PUBLIC_BASE_URL: ${META_AVATAR_PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+      META_AVATAR_OLLAMA_IMAGE_API_URL: ${META_AVATAR_OLLAMA_IMAGE_API_URL:-http://host.docker.internal:11434/api/generate}
+      META_AVATAR_OLLAMA_IMAGE_MODEL: ${META_AVATAR_OLLAMA_IMAGE_MODEL:-x/flux2-klein:4b}
     volumes:
       - meta-avatar-models:/data/models
     restart: unless-stopped

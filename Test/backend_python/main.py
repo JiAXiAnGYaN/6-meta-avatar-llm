@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -9,6 +10,8 @@ import struct
 import threading
 import time
 import unicodedata
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
@@ -43,6 +46,14 @@ OPENAI_IMAGE_QUALITY =os.getenv ('META_AVATAR_OPENAI_IMAGE_QUALITY','medium')
 OPENAI_IMAGE_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300'))
 OPENAI_IMAGE_ATTEMPTS =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2'))
 OPENAI_IMAGE_RESPONSE_LIMIT_BYTES =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_RESPONSE_LIMIT_MB','30'))*1024 *1024
+OLLAMA_IMAGE_API_URL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_API_URL','http://127.0.0.1:11434/api/generate')
+OLLAMA_IMAGE_MODEL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_MODEL','x/flux2-klein:4b')
+OLLAMA_IMAGE_SIZE =os.getenv ('META_AVATAR_OLLAMA_IMAGE_SIZE','768x1024')
+OLLAMA_IMAGE_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_TIMEOUT','900'))
+BATCH_LIMIT =int (os.getenv ('META_AVATAR_BATCH_LIMIT','20'))
+BUNDESTAG_URL =os.getenv ('META_AVATAR_BUNDESTAG_URL','https://www.bundestag.de/resource/blob/472878/MdB-Stammdaten.zip')
+BUNDESTAG_PERIOD =int (os.getenv ('META_AVATAR_BUNDESTAG_PERIOD','21'))
+BUNDESTAG_LIMIT_BYTES =int (os.getenv ('META_AVATAR_BUNDESTAG_LIMIT_MB','30'))*1024 *1024
 HF_CONNECT_ATTEMPTS =int (os.getenv ('META_AVATAR_HF_CONNECT_ATTEMPTS','3'))
 HF_HTTP_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_HF_HTTP_TIMEOUT','600'))
 if OPENAI_IMAGE_TIMEOUT_SECONDS <30 :
@@ -55,20 +66,28 @@ if OPENAI_IMAGE_QUALITY not in {'low','medium','high','auto'}:
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_QUALITY must be low, medium, high, or auto.')
 if not re.fullmatch ('\\d+x\\d+|auto',OPENAI_IMAGE_SIZE ):
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_SIZE must be WIDTHxHEIGHT or auto.')
+if not re.fullmatch ('\\d+x\\d+',OLLAMA_IMAGE_SIZE ):
+    raise ValueError ('META_AVATAR_OLLAMA_IMAGE_SIZE must be WIDTHxHEIGHT.')
+if OLLAMA_IMAGE_TIMEOUT_SECONDS <30 or BATCH_LIMIT <1 or BATCH_LIMIT >100 :
+    raise ValueError ('Ollama timeout or batch limit is invalid.')
 if HF_HTTP_TIMEOUT_SECONDS <30 :
     raise ValueError ('META_AVATAR_HF_HTTP_TIMEOUT must be at least 30.')
 POSE_MODEL_PATH =Path (os.getenv ('META_AVATAR_POSE_MODEL',str (BASE_DIR /'models'/'pose_landmarker_lite.task'))).expanduser ()
 MARCHING_CUBES_RESOLUTION =int (os.getenv ('META_AVATAR_MC_RESOLUTION','256'))
 if MARCHING_CUBES_RESOLUTION <32 or MARCHING_CUBES_RESOLUTION >320 or MARCHING_CUBES_RESOLUTION %32 !=0 :
     raise ValueError ('META_AVATAR_MC_RESOLUTION must be a multiple of 32 between 32 and 320.')
-_GENERATION_LOCKS =tuple ((threading.Lock ()for _ in range (32 )))
+_GENERATION_LOCKS :dict [str ,threading.Lock ]={}
+_GENERATION_LOCKS_LOCK =threading.Lock ()
 _POSE_VALIDATION_LOCK =threading.Lock ()
 _POSE_LANDMARKER :Any |None =None
+_MDB_LOCK =threading.Lock ()
+_MDB_NAMES :list [str ]=[]
+_MDB_TIME =0.0
 _SSL_CONTEXT =ssl.create_default_context (cafile =certifi.where ())
 tmpduui =BASE_DIR /'duui'
 tmpxml =(tmpduui /'typesystem.xml').read_text (encoding ='utf-8')
 tmplua =(tmpduui /'communication.lua').read_text (encoding ='utf-8')
-app =FastAPI (title ='Meta-Avatar AI Cartoon-to-3D API',version ='2.0.0',description ='Generates a controlled full-body cartoon reference with GPT Image and reconstructs it as a GLB model.')
+app =FastAPI (title ='Meta-Avatar AI Cartoon-to-3D API',version ='2.3.0',description ='Generates full-body cartoon references with GPT Image or Ollama and reconstructs them as GLB models.')
 app.mount ('/models',StaticFiles (directory =str (MODEL_DIR )),name ='models')
 
 class AvatarResponse (BaseModel ):
@@ -78,6 +97,34 @@ class AvatarResponse (BaseModel ):
     model_url :str =''
     reference_image_url :str =''
     cached :bool =False
+    provider :str =''
+    image_model :str =''
+
+class CompareResponse (BaseModel ):
+    name :str
+    status :str
+    message :str
+    openai :AvatarResponse
+    ollama :AvatarResponse
+
+class BatchInput (BaseModel ):
+    names :list [str ]=[]
+    provider :str ='openai'
+    force :bool =False
+
+class BatchResponse (BaseModel ):
+    status :str
+    message :str
+    total :int
+    success :int
+    failed :int
+    results :list [AvatarResponse ]=[]
+
+class GermanMembersResponse (BaseModel ):
+    period :int
+    total :int
+    start :int
+    names :list [str ]=[]
 
 class HealthResponse (BaseModel ):
     status :Literal ['ok']
@@ -115,14 +162,18 @@ def is_plausible_person_name (name :str )->bool :
     shuju2 ={' ','-',"'",'’','.'}
     return any ((linshi1.isalpha ()for linshi1 in name ))and all ((linshi1.isalpha ()or unicodedata.category (linshi1 ).startswith ('M')or linshi1 in shuju2 for linshi1 in name ))
 
-def model_filename (name :str )->str :
+def model_filename (name :str ,provider :str ='openai')->str :
     jieguo6 =normalize_name (name )
     a3 =unicodedata.normalize ('NFKD',jieguo6 ).encode ('ascii','ignore').decode ('ascii')
     tmp7 =re.sub ('[^a-zA-Z0-9]+','-',a3 ).strip ('-').lower ()
     tmp7 =tmp7 [:48 ]or 'avatar'
-    b4 =':'.join ((PIPELINE_VERSION ,OPENAI_IMAGE_MODEL ,OPENAI_IMAGE_SIZE ,OPENAI_IMAGE_QUALITY ,jieguo6.casefold ()))
+    if provider =='ollama':
+        b4 =':'.join ((PIPELINE_VERSION ,'ollama',OLLAMA_IMAGE_MODEL ,OLLAMA_IMAGE_SIZE ,jieguo6.casefold ()))
+    else :
+        b4 =':'.join ((PIPELINE_VERSION ,OPENAI_IMAGE_MODEL ,OPENAI_IMAGE_SIZE ,OPENAI_IMAGE_QUALITY ,jieguo6.casefold ()))
     dongxi5 =hashlib.sha256 (b4.encode ('utf-8')).hexdigest ()[:10 ]
-    return f'{tmp7}-{PIPELINE_VERSION}-{dongxi5}.glb'
+    tmp8 ='-ollama'if provider =='ollama'else ''
+    return f'{tmp7}-{PIPELINE_VERSION}{tmp8}-{dongxi5}.glb'
 
 def reference_image_filename (model_name :str )->str :
     if Path (model_name ).name !=model_name or not model_name.endswith ('.glb'):
@@ -130,8 +181,9 @@ def reference_image_filename (model_name :str )->str :
     return f'{Path(model_name).stem}.reference.png'
 
 def _generation_lock (filename :str )->threading.Lock :
-    linshi8 =int (hashlib.sha256 (filename.encode ('utf-8')).hexdigest ()[:8 ],16 )
-    return _GENERATION_LOCKS [linshi8 %len (_GENERATION_LOCKS )]
+    with _GENERATION_LOCKS_LOCK :
+        if filename not in _GENERATION_LOCKS:_GENERATION_LOCKS [filename]=threading.Lock ()
+        return _GENERATION_LOCKS [filename]
 
 def _get_pose_landmarker ()->Any :
     global _POSE_LANDMARKER
@@ -262,6 +314,42 @@ def _call_openai_image_api (prompt :str )->bytes :
         raise AvatarImageGenerationError ('The OpenAI image service did not return the requested PNG image.')
     return shuju51
 
+def _call_ollama_image_api (prompt :str )->bytes :
+    tmp60 =OLLAMA_IMAGE_SIZE.split ('x')
+    a61 =json.dumps ({'model':OLLAMA_IMAGE_MODEL ,'prompt':prompt ,'width':int (tmp60 [0 ]),'height':int (tmp60 [1 ]),'stream':False }).encode ('utf-8')
+    b62 =UrlRequest (OLLAMA_IMAGE_API_URL ,data =a61 ,headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
+    try :
+        with urlopen (b62 ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as tmp63 :
+            tmp64 =tmp63.read (OPENAI_IMAGE_RESPONSE_LIMIT_BYTES +1 )
+    except HTTPError as tmp65 :
+        tmp66 =''
+        try :
+            tmp66 =tmp65.read (4096 ).decode ('utf-8','replace')
+            tmp67 =json.loads (tmp66 )
+            if isinstance (tmp67 ,dict ):tmp66 =str (tmp67.get ('error','')).strip ()
+        except Exception :
+            pass
+        logger.warning ('Ollama image request returned HTTP %s: %s',tmp65.code ,tmp66 )
+        if tmp66 =='image generation models are not currently supported':
+            tmp66 ='Ollama '+tmp66 +'. Use Ollama 0.32.5 for image generation.'
+        elif tmp66 :tmp66 ='Ollama error: '+tmp66
+        else :tmp66 ='Ollama rejected the image request.'
+        raise AvatarImageGenerationError (tmp66 )from tmp65
+    except (URLError ,TimeoutError ,OSError )as tmp65 :
+        raise AvatarImageConfigurationError ('Ollama could not be reached. Start Ollama and pull the configured image model.')from tmp65
+    if len (tmp64 )>OPENAI_IMAGE_RESPONSE_LIMIT_BYTES :
+        raise AvatarImageGenerationError ('The Ollama image response was too large.')
+    try :
+        a66 =json.loads (tmp64 )
+        b67 =a66 ['image']
+        if not isinstance (b67 ,str )or not b67 :raise ValueError ('Missing image')
+        tmp68 =base64.b64decode (b67 ,validate =True )
+    except (KeyError ,TypeError ,ValueError ,json.JSONDecodeError )as tmp65 :
+        raise AvatarImageGenerationError ('Ollama returned an invalid image response.')from tmp65
+    if not tmp68.startswith (b'\x89PNG\r\n\x1a\n'):
+        raise AvatarImageGenerationError ('Ollama did not return a PNG image.')
+    return tmp68
+
 def _generated_reference_is_usable (image_bytes :bytes )->bool :
     try :
         linshi57 =_decode_image_bytes (image_bytes )
@@ -278,7 +366,7 @@ def _generated_reference_is_usable (image_bytes :bytes )->bool :
         logger.info ('Generated reference validation failed: %s',shuju58 )
         return False
 
-def generate_cartoon_reference_image (name :str ,output_filename :str )->Path :
+def generate_cartoon_reference_image (name :str ,output_filename :str ,provider :str ='openai')->Path :
     tmpmeiyong =0
     for tmpx in range (1 ):
         tmpmeiyong +=tmpx
@@ -286,14 +374,16 @@ def generate_cartoon_reference_image (name :str ,output_filename :str )->Path :
         raise ValueError ('output_filename must be a plain .png filename')
     b67 =build_cartoon_reference_prompt (name )
     a66 :AvatarImageGenerationError |None =None
+    tmp69 =OLLAMA_IMAGE_MODEL if provider =='ollama'else OPENAI_IMAGE_MODEL
     for jieguo62 in range (1 ,OPENAI_IMAGE_ATTEMPTS +1 ):
-        logger.info ('Generating cartoon reference with %s (%d/%d)',OPENAI_IMAGE_MODEL ,jieguo62 ,OPENAI_IMAGE_ATTEMPTS )
+        logger.info ('Generating cartoon reference with %s (%d/%d)',tmp69 ,jieguo62 ,OPENAI_IMAGE_ATTEMPTS )
         try :
-            shuju65 =_call_openai_image_api (b67 )
+            shuju65 =_call_ollama_image_api (b67 )if provider =='ollama'else _call_openai_image_api (b67 )
         except AvatarImageConfigurationError :
             raise
         except AvatarImageGenerationError as tmp63 :
             a66 =tmp63
+            if provider =='ollama'and ('not currently supported'in str (tmp63 )or 'model requires'in str (tmp63 )):raise
             if jieguo62 <OPENAI_IMAGE_ATTEMPTS :
                 time.sleep (jieguo62 )
             continue
@@ -309,7 +399,7 @@ def generate_cartoon_reference_image (name :str ,output_filename :str )->Path :
             return linshi64
         finally :
             dongxi68.unlink (missing_ok =True )
-    raise AvatarImageGenerationError ('No usable AI cartoon reference image was generated.')from a66
+    raise AvatarImageGenerationError (str (a66 )if a66 else 'No usable AI cartoon reference image was generated.')from a66
 
 def create_huggingface_client ()->Client :
     linshi71 :Exception |None =None
@@ -658,10 +748,106 @@ def build_asset_url (request :Request ,filename :str )->str :
         return f'{PUBLIC_BASE_URL}/models/{quote(filename)}'
     return str (request.url_for ('models',path =filename ))
 
-def successful_response (request :Request ,name :str ,filename :str ,cached :bool )->AvatarResponse :
+def successful_response (request :Request ,name :str ,filename :str ,cached :bool ,provider :str ='openai')->AvatarResponse :
     shuju219 =reference_image_filename (filename )
     a220 =MODEL_DIR /shuju219
-    return AvatarResponse (name =name ,status ='success',message ='Model loaded from cache.'if cached else 'Model generated successfully.',model_url =build_asset_url (request ,filename ),reference_image_url =build_asset_url (request ,shuju219 )if a220.is_file ()and a220.stat ().st_size >0 else '',cached =cached )
+    tmp220 =OLLAMA_IMAGE_MODEL if provider =='ollama'else OPENAI_IMAGE_MODEL
+    return AvatarResponse (name =name ,status ='success',message ='Model loaded from cache.'if cached else 'Model generated successfully.',model_url =build_asset_url (request ,filename ),reference_image_url =build_asset_url (request ,shuju219 )if a220.is_file ()and a220.stat ().st_size >0 else '',cached =cached ,provider =provider ,image_model =tmp220 )
+
+def _provider (provider :str )->str :
+    tmp221 =provider.strip ().lower ()
+    if tmp221 not in {'openai','ollama'}:
+        raise HTTPException (status_code =422 ,detail ='provider must be openai or ollama')
+    return tmp221
+
+def _valid_name (name :str )->str :
+    tmp222 =normalize_name (name )
+    if not tmp222 :raise HTTPException (status_code =422 ,detail ='name must contain visible characters')
+    if not is_plausible_person_name (tmp222 ):raise HTTPException (status_code =422 ,detail ='name must contain only characters used in a personal name')
+    return tmp222
+
+def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->AvatarResponse :
+    linshi225 =_valid_name (name )
+    tmp223 =_provider (provider )
+    dongxi222 =model_filename (linshi225 ,tmp223 )
+    shuju226 =reference_image_filename (dongxi222 )
+    jieguo223 =MODEL_DIR /dongxi222
+    b228 =MODEL_DIR /shuju226
+    tmp224 =OLLAMA_IMAGE_MODEL if tmp223 =='ollama'else OPENAI_IMAGE_MODEL
+    with _generation_lock (dongxi222 ):
+        if not force and jieguo223.is_file ()and jieguo223.stat ().st_size >0 :
+            try :
+                dongxi229 =ensure_cached_model_texture (jieguo223 ,b228 )
+                if dongxi229 :logger.info ('Upgraded cached avatar texture for %s',linshi225 )
+                else :logger.info ('Serving cached avatar for %s',linshi225 )
+                return successful_response (request ,linshi225 ,dongxi222 ,True ,tmp223 )
+            except AvatarGenerationError :
+                logger.exception ('Cached model texture upgrade failed for %s',linshi225 )
+                return AvatarResponse (name =linshi225 ,status ='error',message ='The cached 3D model could not be upgraded. Generate it again.',provider =tmp223 ,image_model =tmp224 )
+        try :
+            a227 =not b228.is_file ()or b228.stat ().st_size ==0
+            if force or a227 :b228 =generate_cartoon_reference_image (linshi225 ,shuju226 ,tmp223 )
+            generate_3d_via_huggingface (b228 ,dongxi222 )
+        except AvatarImageConfigurationError as b221 :
+            logger.error ('AI reference generation is not configured for %s: %s',linshi225 ,b221 )
+            if tmp223 =='ollama':tmp226 ='Start Ollama and pull '+OLLAMA_IMAGE_MODEL+'.'
+            elif 'OPENAI_API_KEY'in str (b221 ):tmp226 ='Set OPENAI_API_KEY before starting the backend.'
+            else :tmp226 ='OpenAI TLS certificate verification failed.'
+            return AvatarResponse (name =linshi225 ,status ='error',message =tmp226 ,provider =tmp223 ,image_model =tmp224 )
+        except AvatarImageGenerationError as tmp225 :
+            logger.exception ('AI reference generation failed for %s with %s',linshi225 ,tmp223 )
+            return AvatarResponse (name =linshi225 ,status ='error',message =str (tmp225 ),provider =tmp223 ,image_model =tmp224 )
+        except AvatarGenerationError :
+            logger.exception ('3D reconstruction failed for %s',linshi225 )
+            return AvatarResponse (name =linshi225 ,status ='error',message ='The 3D reconstruction service failed.',provider =tmp223 ,image_model =tmp224 )
+    return successful_response (request ,linshi225 ,dongxi222 ,False ,tmp223 )
+
+def _xtag (tmp1 :Any )->str :
+    return str (tmp1.tag ).rsplit ('}',1 )[-1 ]
+
+def _xtext (tmp1 :Any ,name :str )->str :
+    for tmp2 in tmp1.iter ():
+        if _xtag (tmp2 )==name and tmp2.text:return tmp2.text.strip ()
+    return ''
+
+def _read_mps (tmp1 :bytes )->list [str ]:
+    with zipfile.ZipFile (io.BytesIO (tmp1 ))as tmp2 :
+        tmp3 =[x for x in tmp2.namelist ()if x.lower ().endswith ('.xml')]
+        if not tmp3 :raise ValueError ('The Bundestag ZIP has no XML file.')
+        tmp4 =ET.fromstring (tmp2.read (tmp3 [0 ]))
+    tmp5 =[]
+    for tmp6 in tmp4.iter ():
+        if _xtag (tmp6 )!='MDB':continue
+        tmp7 =False
+        for tmp8 in tmp6.iter ():
+            if _xtag (tmp8 )=='WAHLPERIODE'and _xtext (tmp8 ,'WP')==str (BUNDESTAG_PERIOD )and not _xtext (tmp8 ,'MDBWP_BIS'):
+                tmp7 =True
+                break
+        if not tmp7 :continue
+        tmp9 =[x for x in tmp6.iter ()if _xtag (x )=='NAME']
+        if not tmp9 :continue
+        tmp10 =[x for x in tmp9 if not _xtext (x ,'HISTORIE_BIS')]
+        tmp11 =tmp10 [-1 ]if tmp10 else tmp9 [-1 ]
+        tmp12 =' '.join (x for x in (_xtext (tmp11 ,'VORNAME'),_xtext (tmp11 ,'ADEL'),_xtext (tmp11 ,'PRAEFIX'),_xtext (tmp11 ,'NACHNAME'))if x )
+        tmp12 =normalize_name (tmp12 )
+        if tmp12 and is_plausible_person_name (tmp12 ):tmp5.append (tmp12 )
+    return sorted (set (tmp5 ),key =str.casefold )
+
+def german_mps ()->list [str ]:
+    global _MDB_NAMES,_MDB_TIME
+    with _MDB_LOCK :
+        if _MDB_NAMES and time.time ()-_MDB_TIME <21600:return list (_MDB_NAMES )
+        tmp1 =UrlRequest (BUNDESTAG_URL ,headers ={'User-Agent':'MetaAvatar/2.2','Accept':'application/zip'})
+        try :
+            with urlopen (tmp1 ,timeout =60 ,context =_SSL_CONTEXT )as tmp2:tmp3 =tmp2.read (BUNDESTAG_LIMIT_BYTES +1 )
+        except Exception as tmp4:raise AvatarGenerationError ('The official Bundestag member list could not be downloaded.')from tmp4
+        if len (tmp3 )>BUNDESTAG_LIMIT_BYTES:raise AvatarGenerationError ('The Bundestag member list is too large.')
+        try :tmp5 =_read_mps (tmp3 )
+        except Exception as tmp4:raise AvatarGenerationError ('The official Bundestag member list could not be read.')from tmp4
+        if not tmp5:raise AvatarGenerationError ('No current Bundestag members were found.')
+        _MDB_NAMES =tmp5
+        _MDB_TIME =time.time ()
+        return list (_MDB_NAMES )
 
 @app.get ('/api/health',response_model =HealthResponse )
 def health ()->HealthResponse :
@@ -671,47 +857,50 @@ def health ()->HealthResponse :
     return HealthResponse (status ='ok',service ='meta-avatar')
 
 @app.get ('/api/avatar',response_model =AvatarResponse )
-def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ,description ='Regenerate the model even when a cached GLB exists.'))->AvatarResponse :
+def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ),provider :str =Query (default ='openai'))->AvatarResponse :
     tmpmeiyong =0
     for tmpx in range (1 ):
         tmpmeiyong +=tmpx
-    linshi225 =normalize_name (name )
-    if not linshi225 :
-        raise HTTPException (status_code =422 ,detail ='name must contain visible characters')
-    if not is_plausible_person_name (linshi225 ):
-        raise HTTPException (status_code =422 ,detail ='name must contain only characters used in a personal name')
-    dongxi222 =model_filename (linshi225 )
-    shuju226 =reference_image_filename (dongxi222 )
-    jieguo223 =MODEL_DIR /dongxi222
-    b228 =MODEL_DIR /shuju226
-    with _generation_lock (dongxi222 ):
-        if not force and jieguo223.is_file ()and (jieguo223.stat ().st_size >0 ):
-            try :
-                dongxi229 =ensure_cached_model_texture (jieguo223 ,b228 )
-                if dongxi229 :
-                    logger.info ('Upgraded cached avatar texture for %s',linshi225 )
-                else :
-                    logger.info ('Serving cached avatar for %s',linshi225 )
-                return successful_response (request ,linshi225 ,dongxi222 ,True )
-            except AvatarGenerationError :
-                logger.exception ('Cached model texture upgrade failed for %s',linshi225 )
-                return AvatarResponse (name =linshi225 ,status ='error',message ='The cached 3D model could not be upgraded with its full-body texture. Regenerate the avatar with force=true.')
-        try :
-            a227 =not b228.is_file ()or b228.stat ().st_size ==0
-            if force or a227 :
-                b228 =generate_cartoon_reference_image (linshi225 ,shuju226 )
-            generate_3d_via_huggingface (b228 ,dongxi222 )
-        except AvatarImageConfigurationError as b221 :
-            logger.error ('AI reference generation is not configured for %s: %s',linshi225 ,b221 )
-            tmp224 ='Set OPENAI_API_KEY before starting the backend.'if 'OPENAI_API_KEY'in str (b221 )else 'OpenAI TLS certificate verification failed. Reinstall the backend requirements and restart the service.'
-            return AvatarResponse (name =linshi225 ,status ='error',message =tmp224 )
-        except AvatarImageGenerationError :
-            logger.exception ('AI reference generation failed for %s',linshi225 )
-            return AvatarResponse (name =linshi225 ,status ='error',message ='AI cartoon reference generation failed. Please try again later.')
-        except AvatarGenerationError :
-            logger.exception ('3D reconstruction failed for %s',linshi225 )
-            return AvatarResponse (name =linshi225 ,status ='error',message ='The 3D reconstruction service failed. Please try again later.')
-    return successful_response (request ,linshi225 ,dongxi222 ,False )
+    return _create_avatar (request ,name ,force ,provider )
+
+@app.get ('/api/compare',response_model =CompareResponse )
+def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ))->CompareResponse :
+    tmp1 =_valid_name (name )
+    tmp2 :dict [str ,AvatarResponse ]={}
+    def run (tmp3 :str )->None :
+        try :tmp2 [tmp3]=_create_avatar (request ,tmp1 ,force ,tmp3 )
+        except Exception as tmp4:
+            logger.exception ('Comparison failed for %s with %s',tmp1 ,tmp3 )
+            tmp2 [tmp3]=AvatarResponse (name =tmp1 ,status ='error',message =str (tmp4 ),provider =tmp3 )
+    tmp5 =threading.Thread (target =run ,args =('openai',))
+    tmp6 =threading.Thread (target =run ,args =('ollama',))
+    tmp5.start ();tmp6.start ();tmp5.join ();tmp6.join ()
+    tmp7 =tmp2 ['openai'].status =='success'and tmp2 ['ollama'].status =='success'
+    return CompareResponse (name =tmp1 ,status ='success'if tmp7 else 'error',message ='Both models are ready.'if tmp7 else 'One or both models failed. Check the two result messages.',openai =tmp2 ['openai'],ollama =tmp2 ['ollama'])
+
+@app.post ('/api/batch',response_model =BatchResponse )
+def batch (data :BatchInput ,request :Request )->BatchResponse :
+    tmp1 =_provider (data.provider )
+    tmp2 =[]
+    for tmp3 in data.names :
+        tmp4 =normalize_name (tmp3 )
+        if tmp4 and tmp4.casefold ()not in {x.casefold ()for x in tmp2}:tmp2.append (tmp4 )
+    if not tmp2:raise HTTPException (status_code =422 ,detail ='Add at least one German MP name.')
+    if len (tmp2 )>BATCH_LIMIT:raise HTTPException (status_code =422 ,detail =f'A batch can contain at most {BATCH_LIMIT} names.')
+    tmp5 =[]
+    for tmp6 in tmp2 :
+        try :tmp5.append (_create_avatar (request ,tmp6 ,data.force ,tmp1 ))
+        except HTTPException as tmp7:tmp5.append (AvatarResponse (name =tmp6 ,status ='error',message =str (tmp7.detail ),provider =tmp1 ))
+    tmp8 =sum (1 for x in tmp5 if x.status =='success')
+    tmp9 =len (tmp5 )-tmp8
+    tmp10 ='success'if tmp9 ==0 else ('error'if tmp8 ==0 else 'partial')
+    return BatchResponse (status =tmp10 ,message =f'Finished {len(tmp5)} names: {tmp8} succeeded and {tmp9} failed.',total =len (tmp5 ),success =tmp8 ,failed =tmp9 ,results =tmp5 )
+
+@app.get ('/api/german-members',response_model =GermanMembersResponse )
+def german_members (start :int =Query (default =0 ,ge =0 ),limit :int =Query (default =20 ,ge =1 ,le =1000 ))->GermanMembersResponse :
+    try :tmp1 =german_mps ()
+    except AvatarGenerationError as tmp2:raise HTTPException (status_code =502 ,detail =str (tmp2 ))from tmp2
+    return GermanMembersResponse (period =BUNDESTAG_PERIOD ,total =len (tmp1 ),start =start ,names =tmp1 [start :start +limit ])
 
 @app.get('/v1/typesystem')
 def typesystem():
@@ -725,7 +914,7 @@ def communication():
 
 @app.get('/v1/documentation')
 def docs():
-    return {'annotator_name':'meta-avatar-duui','version':'2.1.0','implementation_lang':'Python','meta':{'model':OPENAI_IMAGE_MODEL ,'reconstruction':HUGGING_FACE_SPACE },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
+    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL],'reconstruction':HUGGING_FACE_SPACE },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
 
 @app.get('/v1/details/input_output')
 def inputOutput():
@@ -738,7 +927,7 @@ def process(data:TmpInput,request:Request):
     tmp230=normalize_name(data.name or data.text)
     if not tmp230:return TmpOutput(name='',status='error',message='The DUUI document text or name parameter must contain a politician name.')
     if not is_plausible_person_name(tmp230):return TmpOutput(name=tmp230,status='error',message='The politician name contains invalid characters.')
-    tmp231=create_avatar(request,tmp230,data.force)
+    tmp231=_create_avatar(request,tmp230,data.force,'openai')
     tmp232=TmpOutput(**tmp231.model_dump())
     if tmp231.status=='success'and data.include_binary:
         tmp233=MODEL_DIR/model_filename(tmp230)

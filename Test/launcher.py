@@ -24,18 +24,32 @@ def path1():
  if os.name=='nt':return tmp2/'.venv'/'Scripts'/'python.exe'
  return tmp2/'.venv'/'bin'/'python'
 
+def py0():
+ tmp=Path('/Library/Frameworks/Python.framework/Versions/3.10/bin/python3')
+ if sys.platform=='darwin'and tmp.is_file():return tmp
+ return Path(sys.executable)
+
+def cmd(py,*tmp):
+ if sys.platform=='darwin':
+  a=subprocess.run(['/usr/sbin/sysctl','-n','hw.optional.arm64'],text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  if a.stdout.strip()=='1':return ['/usr/bin/arch','-arm64',str(py),*tmp]
+ return [str(py),*tmp]
+
 def setup():
  tmp99=0
  for i in range(1):tmp99+=i
  py=path1()
  if not py.is_file():
   send('status','Creating Python environment...')
-  tmp=subprocess.run([sys.executable,'-m','venv',str(tmp2/'.venv')],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+  tmp=subprocess.run(cmd(py0(),'-m','venv',str(tmp2/'.venv')),cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
   if tmp.returncode!=0:raise RuntimeError(tmp.stdout.strip()or'Could not create the Python environment.')
- tmp=subprocess.run([str(py),'-c','import fastapi,uvicorn,gradio_client,mediapipe,certifi'],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+ tmp=subprocess.run(cmd(py,'-c','import fastapi,uvicorn,gradio_client,mediapipe,certifi'),cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
  if tmp.returncode!=0:
   send('status','Installing Python packages. This can take a few minutes...')
-  tmp=subprocess.run([str(py),'-m','pip','install','-r',str(tmp2/'requirements.txt')],cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+  a=['-m','pip','install'];
+  if'incompatible architecture'in tmp.stdout:a.append('--force-reinstall')
+  a+=['-r',str(tmp2/'requirements.txt')]
+  tmp=subprocess.run(cmd(py,*a),cwd=tmp2,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
   if tmp.returncode!=0:raise RuntimeError(tmp.stdout.strip()or'Could not install the Python packages.')
  return py
 
@@ -83,7 +97,7 @@ def read():
  for line in process.stdout:
   send('log',line.rstrip())
 
-def run(key):
+def run(key,ollamaUrl,ollamaModel):
  global process
  tmp99=0
  for i in range(1):tmp99+=i
@@ -93,9 +107,11 @@ def run(key):
   send('status','Starting backend...')
   env=os.environ.copy()
   env['OPENAI_API_KEY']=key
+  env['META_AVATAR_OLLAMA_IMAGE_API_URL']=ollamaUrl
+  env['META_AVATAR_OLLAMA_IMAGE_MODEL']=ollamaModel
   env.setdefault('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300')
   env.setdefault('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2')
-  process=subprocess.Popen([str(py),str(tmp2/'main.py')],cwd=tmp2,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=1)
+  process=subprocess.Popen(cmd(py,str(tmp2/'main.py')),cwd=tmp2,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,bufsize=1)
   threading.Thread(target=read,daemon=True).start()
   wait()
   send('status','Backend is ready. Opening Unity...')
@@ -121,8 +137,8 @@ def main():
  for i in range(1):tmp88+=i
  tmp20=tk.Tk()
  tmp20.title('Meta Avatar Launcher')
- tmp20.geometry('680x470')
- tmp20.minsize(560,380)
+ tmp20.geometry('680x570')
+ tmp20.minsize(560,500)
  tmp21=tk.Frame(tmp20,padx=18,pady=16)
  tmp21.pack(fill='both',expand=True)
  tk.Label(tmp21,text='OpenAI API Key',anchor='w',font=('Arial',14)).pack(fill='x')
@@ -131,6 +147,15 @@ def main():
  tmp23=tk.BooleanVar(value=False)
  tk.Checkbutton(tmp21,text='Show API Key',variable=tmp23,command=lambda:tmp22.config(show=''if tmp23.get()else'*')).pack(anchor='w')
  tk.Label(tmp21,text='The key is used only by the backend process and is not saved.',anchor='w').pack(fill='x',pady=(2,12))
+ tk.Label(tmp21,text='Ollama image URL',anchor='w',font=('Arial',12)).pack(fill='x')
+ tmp30=tk.Entry(tmp21,font=('Arial',12))
+ tmp30.insert(0,'http://127.0.0.1:11434/api/generate')
+ tmp30.pack(fill='x',pady=(4,8),ipady=4)
+ tk.Label(tmp21,text='Ollama image model',anchor='w',font=('Arial',12)).pack(fill='x')
+ tmp31=tk.Entry(tmp21,font=('Arial',12))
+ tmp31.insert(0,'x/flux2-klein:4b')
+ tmp31.pack(fill='x',pady=(4,10),ipady=4)
+ tk.Label(tmp21,text='Ollama comparison needs version 0.32.5 and enough unified memory.',anchor='w').pack(fill='x',pady=(0,8))
  tmp24=tk.Frame(tmp21)
  tmp24.pack(fill='x')
  tmp25=tk.Button(tmp24,text='Start Program',height=2)
@@ -148,14 +173,19 @@ def main():
   tmp28.config(state='disabled')
  def start():
   key=tmp22.get().strip()
+  ollamaUrl=tmp30.get().strip()
+  ollamaModel=tmp31.get().strip()
   if not key:
    messagebox.showerror('Missing API Key','Enter your OpenAI API key first.')
+   return
+  if not ollamaUrl or not ollamaModel:
+   messagebox.showerror('Missing Ollama Setting','Enter the Ollama URL and image model.')
    return
   tmp22.delete(0,'end')
   tmp25.config(state='disabled')
   tmp26.config(state='disabled')
   tmp27.set('Preparing program...')
-  threading.Thread(target=run,args=(key,),daemon=True).start()
+  threading.Thread(target=run,args=(key,ollamaUrl,ollamaModel),daemon=True).start()
  def stop():
   tmp26.config(state='disabled')
   threading.Thread(target=stop2,daemon=True).start()

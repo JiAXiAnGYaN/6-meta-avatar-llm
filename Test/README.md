@@ -1,24 +1,23 @@
 # Meta Avatar Test
 
-This is a small demo for making a full-body 3D cartoon avatar of a public politician.
+This is a small demo for making full-body 3D cartoon avatars of public politicians.
 
-You type a real politician's name, such as `Olaf Scholz`. The backend first asks GPT Image to make a front-facing cartoon picture. It checks the body pose, sends the picture to an image-to-3D service, adds the picture as a texture, and saves the result as a GLB model. Unity then downloads and shows the model.
+You can make one model, compare two AI image models, or generate German MPs in a batch. You can open the official MP list, search for people, choose a few names, or generate everybody. You can also put the avatar in a plain view, a parliament speech, a press room, or an election stage.
 
 ## Full Process
 
 ```mermaid
 flowchart TD
-    A["Enter a politician's name"] --> B{"Is a finished model cached?"}
-    B -->|Yes| H["Return the saved GLB"]
-    B -->|No| C["GPT Image makes a full-body cartoon picture"]
-    C --> D["MediaPipe checks the front-facing full-body pose"]
-    D -->|Not good enough| C
-    D -->|Good| E["TripoSR changes the picture into a 3D mesh"]
-    E --> F["The backend adds the cartoon picture as a texture"]
-    F --> G["Save the final GLB model"]
+    A["Enter one name or a list of names"] --> B{"Choose a button"}
+    B -->|One model| C["GPT Image makes one full-body picture"]
+    B -->|Compare| D["GPT Image and Ollama work at the same time"]
+    B -->|MP list| E["Choose a few MPs or confirm Generate All"]
+    C --> F["Check the pose and build the 3D model"]
+    D --> G["Check both pictures and build two 3D models"]
+    E --> F
+    F --> H["Save each GLB file"]
     G --> H
-    H --> I["Unity downloads and displays the avatar"]
-    I --> J["Drag to rotate, scroll to zoom, press F to refocus"]
+    H --> I["Unity shows the model in the selected scene"]
 ```
 
 ## What You Need
@@ -28,11 +27,20 @@ flowchart TD
 - Unity `6000.5.4f1`
 - An internet connection
 - An OpenAI API key
+- Ollama `0.32.5`, a Mac with enough unified memory, and `x/flux2-klein:4b`, only for the comparison mode
 - Docker Desktop, only if you want to use the container or DUUI version
 
 The image generation API can cost money. The first generation can also take several minutes. A cached model is much faster because it does not need to be generated again.
 
-The current backend uses `gpt-image-2` for the cartoon picture and `stabilityai/TripoSR` for the 3D mesh.
+The current backend uses `gpt-image-2` and `x/flux2-klein:4b` for cartoon pictures. It uses `stabilityai/TripoSR` for the 3D mesh.
+
+Ollama image generation is still experimental. Use Ollama `0.32.5`. Newer versions from `0.32.6` temporarily removed image generation, even when the downloaded model still says it can make images. The Ollama image model currently works on macOS. The normal GPT mode and the German MP batch mode can still run on Windows.
+
+Before using comparison mode on macOS, install and start Ollama. Then run this once in Terminal:
+
+```bash
+ollama pull x/flux2-klein:4b
+```
 
 ## Quick Start With the GUI
 
@@ -69,12 +77,25 @@ python launcher.py
 ### After the Launcher Opens
 
 1. Enter your OpenAI API key.
-2. Click **Start Program**.
-3. Wait until the backend is ready and Unity opens.
-4. In Unity, open `SampleScene` if it is not already open.
-5. Press the **Play** button at the top of the Unity window.
-6. Enter a real public politician's full name.
-7. Click **Generate Full Body**.
+2. Keep the normal Ollama URL and model, or change them if your Ollama setup is different.
+3. Click **Start Program**.
+4. Wait until the backend is ready and Unity opens.
+5. In Unity, open `SampleScene` if it is not already open.
+6. Press the **Play** button at the top of the Unity window.
+7. Enter a real public politician's full name.
+8. Choose a generation button and a scene button.
+
+The buttons do this:
+
+- **Generate Full Body** makes one model with GPT Image.
+- **Compare GPT / Ollama** makes two versions at the same time. GPT is on the left and Ollama is on the right.
+- **Choose German MPs** opens the official Bundestag member list. Search for a name and tick a few people, or click **Select shown**. Then click **Generate selected**.
+- **Generate all** prepares every name in the official list. The program asks you to confirm because this can make hundreds of paid image requests and can run for many hours.
+- **Stop MP Batch** appears at the bottom-right while a batch is running. It stops after the current person finishes.
+
+The scene buttons are **Plain**, **Parliament Speech**, **Press Room**, and **Election Stage**. You can change the scene before or after loading a model. The scene changes without generating the avatar again.
+
+The batch button saves every successful GLB file in the backend model folder. It does not put hundreds of models into the Unity scene at the same time.
 
 When the model is ready:
 
@@ -96,6 +117,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 export OPENAI_API_KEY='your-api-key'
+export META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
+export META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
 python main.py
 ```
 
@@ -106,6 +129,8 @@ cd C:\path\to\meta_avatar_llm\Test\backend_python
 py -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:OPENAI_API_KEY='your-api-key'
+$env:META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
+$env:META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
 .venv\Scripts\python.exe main.py
 ```
 
@@ -171,6 +196,8 @@ The container uses port `8000` on your computer and port `9714` inside Docker. O
 http://127.0.0.1:8000/api/avatar
 ```
 
+The Docker setup calls Ollama on the host computer through `host.docker.internal`. Ollama must already be running on the host before comparison mode is used.
+
 Stop the container with:
 
 ```bash
@@ -196,6 +223,28 @@ The Docker service can also be used as a DUUI component.
 | `/v1/documentation` | Shows component information |
 | `/v1/details/input_output` | Shows the input and output types |
 | `/v1/process` | Creates or loads an avatar |
+
+The normal web API also has these new endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/api/compare` | Runs GPT Image and Ollama together and returns two GLB URLs |
+| `/api/batch` | Generates a JSON list of names one after another |
+| `/api/german-members` | Reads the current MP names from the official Bundestag open-data file |
+
+This example returns the first 20 names from the official German Bundestag list:
+
+```bash
+curl 'http://127.0.0.1:8000/api/german-members?start=0&limit=20'
+```
+
+This example starts a small batch through the backend API:
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/batch' \
+  -H 'Content-Type: application/json' \
+  -d '{"names":["Sanae Abdi","Knut Abraham"],"provider":"openai","force":false}'
+```
 
 The DUUI result type is `org.metaavatar.annotation.MetaAvatar3D`.
 
@@ -243,6 +292,26 @@ The health endpoint can still say `ok`, but a new avatar cannot be generated wit
 ### Generation takes a long time
 
 GPT Image and TripoSR are online services. A new model may take a few minutes. Do not click the generate button many times while one request is still running.
+
+A comparison builds two models, so it can take longer. A batch can also take a long time and use paid OpenAI image requests. Start by selecting two or three names. Only use **Generate all** when you understand the time and API cost.
+
+### Ollama comparison does not work
+
+Make sure Ollama is running and the image model has been downloaded:
+
+```bash
+ollama pull x/flux2-klein:4b
+```
+
+Check the version too:
+
+```bash
+ollama --version
+```
+
+Use Ollama `0.32.5` for this feature. Ollama `0.32.6` and newer will answer with `image generation models are not currently supported`. The normal launcher URL is `http://127.0.0.1:11434/api/generate`. Ollama image generation is experimental and the listed model currently only works on macOS.
+
+The 4B model is a 5.7 GB download and needs about 5.3 GiB of Metal memory plus Ollama's safety space. An 8 GB M1 Mac may only give Ollama about 4.8 GiB, so comparison mode cannot load this model there. GPT mode still works. Use a Mac with more unified memory or connect the Ollama URL to another Mac that can run the model.
 
 ### Unity does not open
 

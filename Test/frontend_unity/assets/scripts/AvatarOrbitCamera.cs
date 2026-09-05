@@ -7,7 +7,7 @@ public class AvatarOrbitCamera:MonoBehaviour{
  public float minAngle=-75f;
  public float maxAngle=75f;
  public float padding=1.25f;
- public bool InputLocked{get;set;}
+ public bool ownScreen;
  Camera tmp1;
  Bounds tmp2;
  Vector3 tmp3;
@@ -43,13 +43,14 @@ public class AvatarOrbitCamera:MonoBehaviour{
   Mouse mouse=Mouse.current;
   if(mouse!=null){
    bool tmp17=EventSystem.current!=null&&EventSystem.current.IsPointerOverGameObject();
-   if(mouse.leftButton.wasPressedThisFrame&&!tmp17&&!InputLocked)tmp10=true;
+   bool tmp22=!ownScreen||tmp1.pixelRect.Contains(mouse.position.ReadValue());
+   if(mouse.leftButton.wasPressedThisFrame&&!tmp17&&tmp22)tmp10=true;
    if(mouse.leftButton.wasReleasedThisFrame)tmp10=false;
    if(tmp10&&mouse.leftButton.isPressed){
     Vector2 tmp18=mouse.delta.ReadValue();tmp7+=tmp18.x*rotateSpeed;
     tmp8=Mathf.Clamp(tmp8-tmp18.y*rotateSpeed,minAngle,maxAngle);
    }
-   if(!tmp17){
+   if(!tmp17&&tmp22){
     float tmp20=mouse.scroll.ReadValue().y;
     if(!Mathf.Approximately(tmp20,0f)){
      float tmp19=Mathf.Clamp(tmp20/120f,-3f,3f);
@@ -58,7 +59,7 @@ public class AvatarOrbitCamera:MonoBehaviour{
     }
    }
   }
-  if(Keyboard.current?.fKey.wasPressedThisFrame==true){Focus(tmp2);return;}
+  if(Keyboard.current?.fKey.wasPressedThisFrame==true&&(!ownScreen||Mouse.current==null||tmp1.pixelRect.Contains(Mouse.current.position.ReadValue()))){Focus(tmp2);return;}
   gengxin();
  }
  void gengxin(){
