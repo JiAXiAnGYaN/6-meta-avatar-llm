@@ -50,6 +50,7 @@ public class AvatarDataFetcher:MonoBehaviour{
  Camera tmp22;
  int tmp23=-1;
  GameObject tmp40;
+ bool walking;
  bool tmp41;
  bool tmp42;
  string[] tmp43=Array.Empty<string>();
@@ -71,6 +72,7 @@ public class AvatarDataFetcher:MonoBehaviour{
    makeButton(tmp24,"ParliamentButton","Parliament Speech",new Vector2(160,-74),new Vector2(190,38),()=>scene(1));
    makeButton(tmp24,"PressButton","Press Room",new Vector2(360,-74),new Vector2(150,38),()=>scene(2));
    makeButton(tmp24,"ElectionButton","Election Stage",new Vector2(520,-74),new Vector2(170,38),()=>scene(3));
+   makeButton(tmp24,"WalkButton","Walk",new Vector2(700,-74),new Vector2(110,38),walk);
   }
   if(nameInput!=null&&nameInput.placeholder is TMP_Text tmp25)tmp25.text="One name, or MP names separated by commas...";
   if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-124);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
@@ -250,8 +252,8 @@ public class AvatarDataFetcher:MonoBehaviour{
    bool loaded=await tmp9.Load(tmp8);if(!loaded){update2("The generated GLB could not be downloaded.");return;}
    tmp10=new GameObject("Generated_Avatar");if(spawnPoint!=null)tmp10.transform.SetPositionAndRotation(spawnPoint.position,spawnPoint.rotation);
    bool ok=await tmp9.InstantiateMainSceneAsync(tmp10.transform);if(!ok||tmp4){update2("The generated GLB could not be added to the scene.");return;}
-   clear();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;place(tmp1);
-   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);update2("Ready — drag to rotate, scroll to zoom, press F to refocus.");
+   clear();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;place(tmp1);rig(tmp1);
+   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);update2("Ready — drag a body part to move it, drag the background to orbit, scroll to zoom, press F to refocus.");
   }catch(Exception e){update2("Unexpected error while loading the generated model.");Debug.LogException(e);}
   finally{if(tmp10!=null)Destroy(tmp10);tmp9?.Dispose();tmp3=false;}
  }
@@ -262,7 +264,7 @@ public class AvatarDataFetcher:MonoBehaviour{
    tmp11=new GameObject("GPT_Avatar");tmp12=new GameObject("Ollama_Avatar");
    bool[] tmp14=await Task.WhenAll(tmp9.InstantiateMainSceneAsync(tmp11.transform),tmp10.InstantiateMainSceneAsync(tmp12.transform));
    if(!tmp14[0]||!tmp14[1]||tmp4){update2("One comparison model could not be added to the scene.");return;}
-   clear();tmp1=tmp11;tmp2=tmp9;tmp20=tmp12;tmp21=tmp10;tmp11=null;tmp12=null;tmp9=null;tmp10=null;place(tmp1);place(tmp20);
+   clear();tmp1=tmp11;tmp2=tmp9;tmp20=tmp12;tmp21=tmp10;tmp11=null;tmp12=null;tmp9=null;tmp10=null;place(tmp1);place(tmp20);rig(tmp1);rig(tmp20);
    if(get(tmp1,out Bounds tmp15)&&get(tmp20,out Bounds tmp16))split(tmp15,tmp16);
    update2("Left: "+tmp7+" | Right: "+tmp8+". Drag or zoom inside either half.");
   }catch(Exception e){update2("Unexpected error while loading the comparison.");Debug.LogException(e);}
@@ -276,6 +278,25 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp8.rect=new Rect(0,0,.5f,1);tmp22.rect=new Rect(.5f,0,.5f,1);tmp22.depth=tmp8.depth+1;
   tmp8.cullingMask=(tmp23&~(1<<9))|(1<<8);tmp22.cullingMask=(tmp23&~(1<<8))|(1<<9);
   tmp7.ownScreen=true;tmp10.ownScreen=true;tmp7.Focus(tmp5);tmp10.Focus(tmp6);
+ }
+ void rig(GameObject avatar){
+  if(AvatarRig.Build(avatar)==null)return;
+  if(avatar.GetComponent<AvatarIdleMotion>()==null)avatar.AddComponent<AvatarIdleMotion>();
+  if(avatar.GetComponent<AvatarWalkCycle>()==null)avatar.AddComponent<AvatarWalkCycle>();
+  if(GetComponent<AvatarPartInteractor>()==null)gameObject.AddComponent<AvatarPartInteractor>();
+  motion(avatar);
+ }
+ // Idle and walking drive the same bones, so exactly one of them may be enabled at a time.
+ void motion(GameObject avatar){
+  if(avatar==null)return;
+  AvatarIdleMotion idle=avatar.GetComponent<AvatarIdleMotion>();
+  AvatarWalkCycle step=avatar.GetComponent<AvatarWalkCycle>();
+  if(idle!=null)idle.enabled=!walking;
+  if(step!=null)step.enabled=walking;
+ }
+ public void walk(){
+  walking=!walking;motion(tmp1);motion(tmp20);
+  update(walking?"Walking on the spot. Press Walk again to stand still.":"Standing still.");
  }
  void setLayer(GameObject tmp5,int tmp6){tmp5.layer=tmp6;foreach(Transform tmp7 in tmp5.transform)setLayer(tmp7.gameObject,tmp6);}
  void place(GameObject tmp5){
