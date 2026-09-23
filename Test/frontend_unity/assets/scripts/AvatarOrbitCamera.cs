@@ -8,6 +8,7 @@ public class AvatarOrbitCamera:MonoBehaviour{
  public float maxAngle=75f;
  public float padding=1.25f;
  public bool ownScreen;
+ public bool InputLocked;
  Camera tmp1;
  Bounds tmp2;
  Vector3 tmp3;
@@ -44,7 +45,7 @@ public class AvatarOrbitCamera:MonoBehaviour{
   if(mouse!=null){
    bool tmp17=EventSystem.current!=null&&EventSystem.current.IsPointerOverGameObject();
    bool tmp22=!ownScreen||tmp1.pixelRect.Contains(mouse.position.ReadValue());
-   if(mouse.leftButton.wasPressedThisFrame&&!tmp17&&tmp22)tmp10=true;
+   if(mouse.leftButton.wasPressedThisFrame&&!tmp17&&tmp22&&!InputLocked)tmp10=true;
    if(mouse.leftButton.wasReleasedThisFrame)tmp10=false;
    if(tmp10&&mouse.leftButton.isPressed){
     Vector2 tmp18=mouse.delta.ReadValue();tmp7+=tmp18.x*rotateSpeed;
