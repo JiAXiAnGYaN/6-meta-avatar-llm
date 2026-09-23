@@ -10,8 +10,21 @@ services:
       META_AVATAR_PUBLIC_BASE_URL: ${META_AVATAR_PUBLIC_BASE_URL:-http://127.0.0.1:8000}
       META_AVATAR_OLLAMA_IMAGE_API_URL: ${META_AVATAR_OLLAMA_IMAGE_API_URL:-http://host.docker.internal:11434/api/generate}
       META_AVATAR_OLLAMA_IMAGE_MODEL: ${META_AVATAR_OLLAMA_IMAGE_MODEL:-x/flux2-klein:4b}
+      META_AVATAR_3D_MODE: local
+      META_AVATAR_TRIPOSR_PATH: /app/local_models/TripoSR
+      META_AVATAR_LOCAL_IMAGE_MODEL: /app/local_models/stable-diffusion-v1-5
+      META_AVATAR_LOCAL_3D_DEVICE: cpu
+      META_AVATAR_LOCAL_IMAGE_DEVICE: cpu
+      META_AVATAR_MC_RESOLUTION: ${META_AVATAR_MC_RESOLUTION:-128}
+      META_AVATAR_LOCAL_IMAGE_SIZE: 512x768
+      META_AVATAR_LOCAL_PHOTO_STRENGTH: "0.42"
+      META_AVATAR_OFFLINE: ${META_AVATAR_OFFLINE:-0}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      HF_HOME: /app/local_models/.cache
+      U2NET_HOME: /app/local_models/u2net
     volumes:
       - meta-avatar-models:/data/models
+      - ./backend_python/local_models:/app/local_models
     restart: unless-stopped
 volumes:
   meta-avatar-models:

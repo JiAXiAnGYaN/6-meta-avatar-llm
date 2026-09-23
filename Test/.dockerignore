@@ -4,6 +4,7 @@
 **/__pycache__
 **/.matplotlib-cache
 backend_python/hf_generated_models
+backend_python/local_models
 frontend_unity
 launcher.py
 Start.command

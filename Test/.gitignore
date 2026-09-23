@@ -1,0 +1,10 @@
+.idea/
+backend_python/.matplotlib-cache/
+backend_python/.venv/
+backend_python/__pycache__/
+backend_python/hf_generated_models/
+backend_python/local_models/
+frontend_unity/Library/
+frontend_unity/Logs/
+frontend_unity/Temp/
+frontend_unity/UserSettings/

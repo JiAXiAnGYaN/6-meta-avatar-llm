@@ -1,58 +1,63 @@
 # Meta Avatar Test
 
-This is a small demo for making full-body 3D cartoon avatars of public politicians.
+This is a small Unity and Python demo for making full-body 3D avatars. It can work fully offline after one online setup.
 
-You can make one model, compare two AI image models, or generate German MPs in a batch. You can open the official MP list, search for people, choose a few names, or generate everybody. You can also put the avatar in a plain view, a parliament speech, a press room, or an election stage.
+There are two local input methods:
+
+- Enter a person's name. Stable Diffusion 1.5 makes a cartoon picture on this computer, then TripoSR makes the 3D model.
+- Choose your own front full-body picture. Local Stable Diffusion changes it into a cartoon first, then TripoSR makes the 3D model.
+
+GPT Image and Ollama comparison are still available, but they are optional. They do not work in fully offline mode.
 
 ## Full Process
 
 ```mermaid
 flowchart TD
-    A["Enter one name or a list of names"] --> B{"Choose a button"}
-    B -->|One model| C["GPT Image makes one full-body picture"]
-    B -->|Compare| D["GPT Image and Ollama work at the same time"]
-    B -->|MP list| E["Choose a few MPs or confirm Generate All"]
-    C --> F["Check the pose and build the 3D model"]
-    D --> G["Check both pictures and build two 3D models"]
-    E --> F
-    F --> H["Save each GLB file"]
-    G --> H
-    H --> I["Unity shows the model in the selected scene"]
+    A{"Choose an input"}
+    A -->|Enter a name locally| B["Local Stable Diffusion 1.5 makes a 512 x 768 cartoon"]
+    A -->|Enter a name online| B2["GPT Image or Ollama makes a full-body cartoon"]
+    A -->|Choose a picture| C["Check the front full-body picture"]
+    C --> C2["Local Stable Diffusion changes the picture into a full-body cartoon"]
+    B --> D["Check that the whole body is visible"]
+    B2 --> D
+    C2 --> D
+    D --> E["Local TripoSR runs on CPU at resolution 128"]
+    E --> F["Save the GLB and reference PNG"]
+    F --> G["Unity loads the avatar"]
+    G --> H["Choose a scene or show dialogue clouds"]
 ```
+
+Nothing is uploaded when local generation and fully offline mode are used.
 
 ## What You Need
 
 - macOS or Windows 10/11
-- Python 3.10 or a compatible Python version
+- Python 3.10
 - Unity `6000.5.4f1`
-- An internet connection
-- An OpenAI API key
-- Ollama `0.32.5`, a Mac with enough unified memory, and `x/flux2-klein:4b`, only for the comparison mode
-- Docker Desktop, only if you want to use the container or DUUI version
+- About 10 GB of free disk space for Python packages and local model files
+- An internet connection for the first setup only
+- Docker Desktop only if you want the Docker or DUUI version
 
-The image generation API can cost money. The first generation can also take several minutes. A cached model is much faster because it does not need to be generated again.
+An OpenAI API key is only needed for GPT generation. Ollama is only needed for GPT/Ollama comparison.
 
-The current backend uses `gpt-image-2` and `x/flux2-klein:4b` for cartoon pictures. It uses `stabilityai/TripoSR` for the 3D mesh.
+The local setup downloads these models once:
 
-Ollama image generation is still experimental. Use Ollama `0.32.5`. Newer versions from `0.32.6` temporarily removed image generation, even when the downloaded model still says it can make images. The Ollama image model currently works on macOS. The normal GPT mode and the German MP batch mode can still run on Windows.
+- `stabilityai/TripoSR` for image-to-3D
+- `stable-diffusion-v1-5/stable-diffusion-v1-5` FP16 files for the name-to-cartoon step
+- `facebook/dino-vitb16`, which TripoSR needs
+- `u2netp` for local background removal
 
-Before using comparison mode on macOS, install and start Ollama. Then run this once in Terminal:
-
-```bash
-ollama pull x/flux2-klein:4b
-```
+On an 8 GB M1 Mac, 3D generation uses CPU and resolution `128`. Local cartoon generation uses Apple MPS when it is available. The program loads the large parts one after another to save memory. Close Ollama and other large apps before generating a model.
 
 ## Quick Start With the GUI
 
-This is the easiest way to run the complete program.
-
-First, close the `Test/frontend_unity` project if it is already open in Unity.
+This is the easiest way to run the program.
 
 ### macOS
 
-Open the `Test` folder and double-click `Start.command`. If macOS blocks it, right-click it and choose **Open**.
+Close the `Test/frontend_unity` project if it is already open. Open the `Test` folder and double-click `Start.command`. If macOS blocks it, right-click it and choose **Open**.
 
-You can also use this example path in Terminal. Replace `/path/to` with the place where you saved the project.
+You can also use an example path in Terminal. Replace `/path/to` with the place where you saved the project.
 
 ```bash
 cd /path/to/meta_avatar_llm/Test
@@ -61,53 +66,80 @@ cd /path/to/meta_avatar_llm/Test
 
 ### Windows
 
-Open PowerShell and use this example path. Replace `C:\path\to` with the place where you saved the project.
+Open PowerShell and use an example path. Replace `C:\path\to` with your real path.
 
 ```powershell
 cd C:\path\to\meta_avatar_llm\Test
 py launcher.py
 ```
 
-If the `py` command is not available, try:
+If `py` is not available, use:
 
 ```powershell
 python launcher.py
 ```
 
-### After the Launcher Opens
+### First Online Setup
 
-1. Enter your OpenAI API key.
-2. Keep the normal Ollama URL and model, or change them if your Ollama setup is different.
-3. Click **Start Program**.
-4. Wait until the backend is ready and Unity opens.
-5. In Unity, open `SampleScene` if it is not already open.
-6. Press the **Play** button at the top of the Unity window.
-7. Enter a real public politician's full name.
-8. Choose a generation button and a scene button.
+1. Leave **Fully offline** unticked.
+2. Keep the suggested local model folder.
+3. Keep 3D resolution at `128` on an 8 GB M1 Mac.
+4. Click **Download Local Models**.
+5. Wait for `Local models are ready`. Do not close the launcher while files are downloading.
 
-The buttons do this:
+This step creates the Python environment, installs the packages and downloads all model files. It can take a while. You only need to do it once.
 
-- **Generate Full Body** makes one model with GPT Image.
-- **Compare GPT / Ollama** makes two versions at the same time. GPT is on the left and Ollama is on the right.
-- **Choose German MPs** opens the official Bundestag member list. Search for a name and tick a few people, or click **Select shown**. Then click **Generate selected**.
-- **Generate all** prepares every name in the official list. The program asks you to confirm because this can make hundreds of paid image requests and can run for many hours.
-- **Stop MP Batch** appears at the bottom-right while a batch is running. It stops after the current person finishes.
+### Start Fully Offline
 
-The scene buttons are **Plain**, **Parliament Speech**, **Press Room**, and **Election Stage**. You can change the scene before or after loading a model. The scene changes without generating the avatar again.
+1. Disconnect the internet if you want to test real offline use.
+2. Tick **Fully offline**.
+3. Leave the API key empty.
+4. Click **Start Program**.
+5. Wait until Unity opens.
+6. Open `SampleScene` if needed and press the Unity **Play** button.
 
-The batch button saves every successful GLB file in the backend model folder. It does not put hundreds of models into the Unity scene at the same time.
+For a name:
+
+1. Enter the person's name.
+2. Choose the local generation option.
+3. The local cartoon is made first and is passed directly to local 3D generation.
+
+For your own picture:
+
+1. Click **Browse** in Unity.
+2. Choose a PNG, JPG or WebP file.
+3. Enter a simple name for the saved model.
+4. Click **Photo Cartoon 3D**.
+5. The photo is changed into a full-body cartoon before local 3D starts.
+
+The picture should show one person looking straight at the camera. The head, both hands, both legs and both feet should be visible. A plain background gives better results.
 
 When the model is ready:
 
 - Hold the left mouse button and drag to rotate it.
-- Use the mouse wheel to zoom in or out.
-- Press `F` to put the model back in the centre.
+- Use the mouse wheel to zoom.
+- Press `F` to refocus the camera.
+- Use the scene buttons for a plain view, parliament speech, press room or election stage.
+- Comparison models can use the editable dialogue clouds.
 
-The launcher does not save your API key. Keep the launcher open while using the Unity program. Click **Stop Backend** when you finish.
+Keep the launcher open while using Unity. Click **Stop Backend** when you finish.
 
-## Manual Start
+## What Works Offline
 
-Use this method if you want to see the backend logs directly.
+| Feature | Fully offline |
+| --- | --- |
+| Local picture to local cartoon to local 3D | Yes |
+| Name to local cartoon to local 3D | Yes |
+| Load an already saved GLB | Yes |
+| GPT Image generation | No |
+| GPT/Ollama comparison | No |
+| Download a fresh Bundestag member list | No |
+
+A batch with names you already have can still run locally. Opening or updating the official online list needs an internet connection.
+
+## Manual First Setup
+
+Use this if you want to see every command.
 
 ### macOS
 
@@ -115,11 +147,9 @@ Use this method if you want to see the backend logs directly.
 cd /path/to/meta_avatar_llm/Test/backend_python
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements.txt
-export OPENAI_API_KEY='your-api-key'
-export META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
-export META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
-python main.py
+python prepare_local_models.py
 ```
 
 ### Windows PowerShell
@@ -127,94 +157,153 @@ python main.py
 ```powershell
 cd C:\path\to\meta_avatar_llm\Test\backend_python
 py -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:OPENAI_API_KEY='your-api-key'
-$env:META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
-$env:META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
-.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe prepare_local_models.py
 ```
 
-When you see this message, the backend is ready:
+The final line should look like this:
 
 ```text
-Uvicorn running on http://127.0.0.1:8000
+Local models are ready in /example/path/Test/backend_python/local_models
 ```
 
-You can check it in another Terminal window:
+The path above is only an example. Your own path will be different.
 
-```bash
-curl http://127.0.0.1:8000/api/health
-```
-
-On Windows PowerShell, use:
-
-```powershell
-curl.exe http://127.0.0.1:8000/api/health
-```
-
-The expected answer is:
-
-```json
-{"status":"ok","service":"meta-avatar"}
-```
-
-Next, open `Test/frontend_unity` with Unity Hub, open `SampleScene`, and press **Play**.
-
-Press `Control+C` in the backend Terminal when you want to stop it.
-
-## Run With Docker
-
-Docker starts the backend and the DUUI service. It does not open Unity for you.
-
-First, start Docker Desktop.
+## Manual Offline Start
 
 ### macOS
 
 ```bash
-cd /path/to/meta_avatar_llm/Test
-export OPENAI_API_KEY='your-api-key'
-docker compose up --build
-```
-
-If Terminal says `docker: command not found`, use the Docker Desktop command directly:
-
-```bash
-/Applications/Docker.app/Contents/Resources/bin/docker compose up --build
+cd /path/to/meta_avatar_llm/Test/backend_python
+source .venv/bin/activate
+export META_AVATAR_3D_MODE=local
+export META_AVATAR_TRIPOSR_PATH="$PWD/local_models/TripoSR"
+export META_AVATAR_LOCAL_IMAGE_MODEL="$PWD/local_models/stable-diffusion-v1-5"
+export META_AVATAR_LOCAL_3D_DEVICE=cpu
+export META_AVATAR_LOCAL_IMAGE_DEVICE=auto
+export META_AVATAR_MC_RESOLUTION=128
+export META_AVATAR_LOCAL_IMAGE_SIZE=512x768
+export META_AVATAR_LOCAL_PHOTO_STRENGTH=0.42
+export META_AVATAR_OFFLINE=1
+export HF_HOME="$PWD/local_models/.cache"
+export U2NET_HOME="$PWD/local_models/u2net"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+python main.py
 ```
 
 ### Windows PowerShell
 
 ```powershell
-cd C:\path\to\meta_avatar_llm\Test
-$env:OPENAI_API_KEY='your-api-key'
-docker compose up --build
+cd C:\path\to\meta_avatar_llm\Test\backend_python
+$env:META_AVATAR_3D_MODE='local'
+$env:META_AVATAR_TRIPOSR_PATH="$PWD\local_models\TripoSR"
+$env:META_AVATAR_LOCAL_IMAGE_MODEL="$PWD\local_models\stable-diffusion-v1-5"
+$env:META_AVATAR_LOCAL_3D_DEVICE='cpu'
+$env:META_AVATAR_LOCAL_IMAGE_DEVICE='auto'
+$env:META_AVATAR_MC_RESOLUTION='128'
+$env:META_AVATAR_LOCAL_IMAGE_SIZE='512x768'
+$env:META_AVATAR_LOCAL_PHOTO_STRENGTH='0.42'
+$env:META_AVATAR_OFFLINE='1'
+$env:HF_HOME="$PWD\local_models\.cache"
+$env:U2NET_HOME="$PWD\local_models\u2net"
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
+.venv\Scripts\python.exe main.py
 ```
 
-The container uses port `8000` on your computer and port `9714` inside Docker. Open Unity separately and use the same backend address:
+The backend is ready when you see:
 
 ```text
-http://127.0.0.1:8000/api/avatar
+Uvicorn running on http://127.0.0.1:8000
 ```
 
-The Docker setup calls Ollama on the host computer through `host.docker.internal`. Ollama must already be running on the host before comparison mode is used.
+Open `Test/frontend_unity` with Unity Hub, open `SampleScene`, and press **Play**. Press `Control+C` in the backend window when you want to stop it.
 
-Stop the container with:
+## API Examples
+
+Check the backend:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Make a local cartoon and then a local 3D model:
+
+```bash
+curl 'http://127.0.0.1:8000/api/avatar?name=Example%20Person&provider=local&force=false'
+```
+
+Upload a local full-body picture:
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/avatar-from-image' \
+  -F 'name=Example Person' \
+  -F 'force=false' \
+  -F 'image=@/path/to/front-full-body.png'
+```
+
+On Windows PowerShell, use `curl.exe` instead of `curl`.
+
+The expected health result is:
+
+```json
+{"status":"ok","service":"meta-avatar"}
+```
+
+Generated files are saved in:
+
+```text
+backend_python/hf_generated_models/
+```
+
+## Docker and DUUI
+
+Docker starts the backend and DUUI service. It does not open Unity.
+
+The Docker image uses Linux x86-64 because the required MediaPipe package has no Linux ARM wheel. On an M1 Mac this runs through emulation, so the normal GUI launcher is better for local generation.
+
+The first Docker build and model download need internet:
+
+```bash
+cd /path/to/meta_avatar_llm/Test
+mkdir -p backend_python/local_models
+docker compose build
+docker compose run --rm meta-avatar-duui python prepare_local_models.py --dir /app/local_models
+```
+
+After that, start it offline without `--build`:
+
+```bash
+META_AVATAR_OFFLINE=1 HF_HUB_OFFLINE=1 docker compose up
+```
+
+Windows PowerShell uses:
+
+```powershell
+cd C:\path\to\meta_avatar_llm\Test
+New-Item -ItemType Directory -Force backend_python\local_models
+docker compose build
+docker compose run --rm meta-avatar-duui python prepare_local_models.py --dir /app/local_models
+$env:META_AVATAR_OFFLINE='1'
+$env:HF_HUB_OFFLINE='1'
+docker compose up
+```
+
+Open Unity separately. The backend address is:
+
+```text
+http://127.0.0.1:8000
+```
+
+Stop Docker with:
 
 ```bash
 docker compose down
 ```
 
-or:
-
-```bash
-/Applications/Docker.app/Contents/Resources/bin/docker compose down
-```
-
-Docker saves generated models in the `test_meta-avatar-models` volume.
-
-## DUUI Endpoints
-
-The Docker service can also be used as a DUUI component.
+DUUI endpoints:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -224,103 +313,50 @@ The Docker service can also be used as a DUUI component.
 | `/v1/details/input_output` | Shows the input and output types |
 | `/v1/process` | Creates or loads an avatar |
 
-The normal web API also has these new endpoints:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `/api/compare` | Runs GPT Image and Ollama together and returns two GLB URLs |
-| `/api/batch` | Generates a JSON list of names one after another |
-| `/api/german-members` | Reads the current MP names from the official Bundestag open-data file |
-
-This example returns the first 20 names from the official German Bundestag list:
-
-```bash
-curl 'http://127.0.0.1:8000/api/german-members?start=0&limit=20'
-```
-
-This example starts a small batch through the backend API:
-
-```bash
-curl -X POST 'http://127.0.0.1:8000/api/batch' \
-  -H 'Content-Type: application/json' \
-  -d '{"names":["Sanae Abdi","Knut Abraham"],"provider":"openai","force":false}'
-```
-
-The DUUI result type is `org.metaavatar.annotation.MetaAvatar3D`.
-
-If the DUUI client runs on another computer, set `META_AVATAR_PUBLIC_BASE_URL` to an address that the other computer can reach. For example:
-
-```text
-http://192.0.2.10:8000
-```
-
-This is only an example address. Replace it with the real IP address or domain name of your server. You can also use `include_binary=true` to put the GLB and PNG data directly into the CAS.
-
-## Saved Files
-
-When you run the normal Python backend, the files are saved here:
-
-```text
-backend_python/hf_generated_models/
-```
-
-Each avatar normally has two files:
-
-- `name-ai-cartoon-v1-xxxx.glb` is the 3D model.
-- `name-ai-cartoon-v1-xxxx.reference.png` is the generated cartoon picture.
-
 ## Common Problems
+
+### Local models are missing
+
+Turn off **Fully offline**, connect the internet and click **Download Local Models**. Do not move only one model subfolder. Keep the complete `local_models` folder together.
+
+### A model download stops
+
+Run the download again. Finished files are reused. Check that there is enough free disk space and that the connection is stable.
+
+### The program runs out of memory
+
+Keep 3D resolution at `128`, generate one avatar at a time, close Ollama and close other large apps. Do not run GPT/Ollama comparison on an 8 GB M1 Mac.
+
+### Generation is slow
+
+TripoSR uses CPU on this Mac, so a new 3D model can take some time. Wait for the current model before clicking another generation button.
 
 ### Port 8000 is already in use
 
-Another backend or Docker container is already running. Stop it first, then try again.
+Stop the old backend or Docker container first. On macOS:
 
 ```bash
 lsof -nP -iTCP:8000 -sTCP:LISTEN
 ```
 
-On Windows PowerShell, use:
+On Windows PowerShell:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 8000
 ```
 
-### The API key is missing
+### A local picture is rejected
 
-The health endpoint can still say `ok`, but a new avatar cannot be generated without `OPENAI_API_KEY`. Add the key in the GUI or export it before starting the backend.
+Use one clear front full-body picture. Do not use a face-only photo, side view, group photo, image over 15 MB or image over 16 megapixels. The accepted picture is changed into a cartoon before 3D generation.
 
-### Generation takes a long time
+### The face is different
 
-GPT Image and TripoSR are online services. A new model may take a few minutes. Do not click the generate button many times while one request is still running.
-
-A comparison builds two models, so it can take longer. A batch can also take a long time and use paid OpenAI image requests. Start by selecting two or three names. Only use **Generate all** when you understand the time and API cost.
-
-### Ollama comparison does not work
-
-Make sure Ollama is running and the image model has been downloaded:
-
-```bash
-ollama pull x/flux2-klein:4b
-```
-
-Check the version too:
-
-```bash
-ollama --version
-```
-
-Use Ollama `0.32.5` for this feature. Ollama `0.32.6` and newer will answer with `image generation models are not currently supported`. The normal launcher URL is `http://127.0.0.1:11434/api/generate`. Ollama image generation is experimental and the listed model currently only works on macOS.
-
-The 4B model is a 5.7 GB download and needs about 5.3 GiB of Metal memory plus Ollama's safety space. An 8 GB M1 Mac may only give Ollama about 4.8 GiB, so comparison mode cannot load this model there. GPT mode still works. Use a Mac with more unified memory or connect the Ollama URL to another Mac that can run the model.
+Typing only a name does not give Stable Diffusion the real face data. A clear reference picture normally keeps the person's look better. Single-image 3D reconstruction is still an approximation, not a face scan.
 
 ### Unity does not open
 
-Check that Unity `6000.5.4f1` is installed with Unity Hub. Also make sure the same Unity project is not already open in another window. On Windows, the launcher looks for Unity in the normal `C:\Program Files\Unity\Hub\Editor` folder.
+Install Unity `6000.5.4f1` with Unity Hub. Make sure the same project is not already open in another Unity window.
 
-### The face is not exactly the same
+### The browser asks for favicon.ico
 
-This program makes a cartoon avatar from one generated front picture. It is not a face scanner, so some facial details will be different from the real person.
-
-### The browser asks for `favicon.ico`
-
-A `404 Not Found` message for `favicon.ico` is harmless. It does not affect the backend.
+A `404 Not Found` message for `favicon.ico` is harmless.
