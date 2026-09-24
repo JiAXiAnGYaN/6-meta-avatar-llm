@@ -12,8 +12,6 @@ import time
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
-from collections import deque
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any ,Literal
 from urllib.error import HTTPError,URLError
@@ -26,15 +24,16 @@ import uvicorn
 from fastapi import FastAPI ,HTTPException ,Query ,Request ,Response
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from gradio_client import Client ,handle_file
 from pydantic import BaseModel
+from local_worker import LocalWorkerError ,run_triposr
 logging.basicConfig (level =os.getenv ('META_AVATAR_LOG_LEVEL','INFO').upper (),format ='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger =logging.getLogger ('meta_avatar')
 BASE_DIR =Path (__file__ ).resolve ().parent
 MODEL_DIR =Path (os.getenv ('META_AVATAR_OUTPUT_DIR',str (BASE_DIR /'hf_generated_models'))).expanduser ()
 MODEL_DIR.mkdir (parents =True ,exist_ok =True )
 PUBLIC_BASE_URL =os.getenv ('META_AVATAR_PUBLIC_BASE_URL','').rstrip ('/')
-HUGGING_FACE_SPACE =os.getenv ('META_AVATAR_HF_SPACE','stabilityai/TripoSR')
+LOCAL_MODELS_DIR =Path (os.getenv ('META_AVATAR_LOCAL_MODELS',str (BASE_DIR /'local_models'))).expanduser ()
+LOCAL_3D_DEVICE =os.getenv ('META_AVATAR_LOCAL_3D_DEVICE','cpu')
 PIPELINE_VERSION ='ai-cartoon-v1'
 FOREGROUND_RATIO =float (os.getenv ('META_AVATAR_FOREGROUND_RATIO','0.9'))
 if not 0.5 <=FOREGROUND_RATIO <=1.0 :
@@ -54,12 +53,10 @@ BATCH_LIMIT =int (os.getenv ('META_AVATAR_BATCH_LIMIT','20'))
 BUNDESTAG_URL =os.getenv ('META_AVATAR_BUNDESTAG_URL','https://www.bundestag.de/resource/blob/472878/MdB-Stammdaten.zip')
 BUNDESTAG_PERIOD =int (os.getenv ('META_AVATAR_BUNDESTAG_PERIOD','21'))
 BUNDESTAG_LIMIT_BYTES =int (os.getenv ('META_AVATAR_BUNDESTAG_LIMIT_MB','30'))*1024 *1024
-HF_CONNECT_ATTEMPTS =int (os.getenv ('META_AVATAR_HF_CONNECT_ATTEMPTS','3'))
-HF_HTTP_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_HF_HTTP_TIMEOUT','600'))
 if OPENAI_IMAGE_TIMEOUT_SECONDS <30 :
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_TIMEOUT must be at least 30.')
-if OPENAI_IMAGE_ATTEMPTS <1 or HF_CONNECT_ATTEMPTS <1 :
-    raise ValueError ('OpenAI and Hugging Face attempts must be positive.')
+if OPENAI_IMAGE_ATTEMPTS <1 :
+    raise ValueError ('META_AVATAR_OPENAI_IMAGE_ATTEMPTS must be positive.')
 if OPENAI_IMAGE_RESPONSE_LIMIT_BYTES <1024 *1024 :
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_RESPONSE_LIMIT_MB must be at least 1.')
 if OPENAI_IMAGE_QUALITY not in {'low','medium','high','auto'}:
@@ -70,8 +67,6 @@ if not re.fullmatch ('\\d+x\\d+',OLLAMA_IMAGE_SIZE ):
     raise ValueError ('META_AVATAR_OLLAMA_IMAGE_SIZE must be WIDTHxHEIGHT.')
 if OLLAMA_IMAGE_TIMEOUT_SECONDS <30 or BATCH_LIMIT <1 or BATCH_LIMIT >100 :
     raise ValueError ('Ollama timeout or batch limit is invalid.')
-if HF_HTTP_TIMEOUT_SECONDS <30 :
-    raise ValueError ('META_AVATAR_HF_HTTP_TIMEOUT must be at least 30.')
 POSE_MODEL_PATH =Path (os.getenv ('META_AVATAR_POSE_MODEL',str (BASE_DIR /'models'/'pose_landmarker_lite.task'))).expanduser ()
 MARCHING_CUBES_RESOLUTION =int (os.getenv ('META_AVATAR_MC_RESOLUTION','256'))
 if MARCHING_CUBES_RESOLUTION <32 or MARCHING_CUBES_RESOLUTION >320 or MARCHING_CUBES_RESOLUTION %32 !=0 :
@@ -401,56 +396,6 @@ def generate_cartoon_reference_image (name :str ,output_filename :str ,provider 
             dongxi68.unlink (missing_ok =True )
     raise AvatarImageGenerationError (str (a66 )if a66 else 'No usable AI cartoon reference image was generated.')from a66
 
-def create_huggingface_client ()->Client :
-    linshi71 :Exception |None =None
-    for jieguo69 in range (1 ,HF_CONNECT_ATTEMPTS +1 ):
-        try :
-            return Client (HUGGING_FACE_SPACE ,httpx_kwargs ={'timeout':HF_HTTP_TIMEOUT_SECONDS })
-        except Exception as tmp70 :
-            linshi71 =tmp70
-            logger.warning ('Hugging Face connection failed (%d/%d): %s',jieguo69 ,HF_CONNECT_ATTEMPTS ,tmp70 )
-            if jieguo69 <HF_CONNECT_ATTEMPTS :
-                time.sleep (jieguo69 )
-    raise AvatarGenerationError ('The Hugging Face Space could not be reached.')from linshi71
-
-def extract_generated_path (result :Any ,*,expected_suffix :str |None =None )->Path :
-    tmp77 =expected_suffix.casefold ()if expected_suffix else None
-    linshi78 :deque [Any ]=deque ([result ])
-    b81 :set [int ]=set ()
-    while linshi78 :
-        b74 =linshi78.popleft ()
-        if isinstance (b74 ,(str ,os.PathLike )):
-            try :
-                a73 =Path (b74 ).expanduser ()
-                shuju79 =tmp77 is None or a73.suffix.casefold ()==tmp77
-                if shuju79 and a73.is_file ():
-                    return a73
-            except (OSError ,TypeError ,ValueError ):
-                continue
-            continue
-        if isinstance (b74 ,Mapping ):
-            dongxi75 =id (b74 )
-            if dongxi75 in b81 :
-                continue
-            b81.add (dongxi75 )
-            for jieguo76 in ('path','name','value','data'):
-                if jieguo76 in b74 :
-                    linshi78.append (b74 [jieguo76 ])
-            linshi78.extend (b74.values ())
-            continue
-        if isinstance (b74 ,(list ,tuple )):
-            dongxi75 =id (b74 )
-            if dongxi75 in b81 :
-                continue
-            b81.add (dongxi75 )
-            linshi78.extend (b74 )
-            continue
-        for shuju72 in ('path','name'):
-            a80 =getattr (b74 ,shuju72 ,None )
-            if a80 is not None :
-                linshi78.append (a80 )
-    raise AvatarGenerationError ('The reconstruction service returned no model file.')
-
 def _read_glb (glb_path :Path )->tuple [dict [str ,Any ],bytes ]:
     shuju93 =Path (glb_path ).read_bytes ()
     if len (shuju93 )<20 :
@@ -693,36 +638,35 @@ def bake_front_projection_texture (source_glb_path :Path ,reference_image_path :
     _write_glb (output_glb_path ,linshi169 ,bytes (jieguo167 ))
     return output_glb_path
 
-def generate_3d_via_huggingface (reference_image_path :Path ,output_filename :str )->Path :
-    tmpmeiyong =0
-    for tmpx in range (1 ):
-        tmpmeiyong +=tmpx
+def generate_3d_local (reference_image_path :Path ,output_filename :str )->Path :
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.glb'):
         raise ValueError ('output_filename must be a plain .glb filename')
     reference_image_path =Path (reference_image_path )
     if not reference_image_path.is_file ():
         raise AvatarGenerationError ('The generated reference image is missing.')
-    logger.info ('Connecting to Hugging Face Space %s',HUGGING_FACE_SPACE )
-    jieguo216 =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.tmp'
+    logger.info ('Running local TripoSR on %s at resolution %d',LOCAL_3D_DEVICE ,MARCHING_CUBES_RESOLUTION )
+    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
+    job =uuid4 ().hex
+    raw_model =MODEL_DIR /f'.{output_filename}.{job}.raw.glb'
+    processed_image =MODEL_DIR /f'.{output_filename}.{job}.processed.png'
+    textured_model =MODEL_DIR /f'.{output_filename}.{job}.tmp'
     try :
-        jieguo209 =create_huggingface_client ()
-        b214 =jieguo209.predict (handle_file (str (reference_image_path )),True ,FOREGROUND_RATIO ,api_name ='/preprocess')
-        a213 =extract_generated_path (b214 )
-        dongxi215 =jieguo209.predict (handle_file (str (a213 )),MARCHING_CUBES_RESOLUTION ,api_name ='/generate')
-        shuju212 =extract_generated_path (dongxi215 ,expected_suffix ='.glb')
-        MODEL_DIR.mkdir (parents =True ,exist_ok =True )
-        bake_front_projection_texture (shuju212 ,a213 ,jieguo216 )
-        if jieguo216.stat ().st_size ==0 :
-            raise AvatarGenerationError ('The reconstruction service returned an empty model.')
-        linshi211 =MODEL_DIR /output_filename
-        jieguo216.replace (linshi211 )
-        return linshi211
+        run_triposr (reference_image_path ,raw_model ,processed_image ,models_dir =LOCAL_MODELS_DIR ,resolution =MARCHING_CUBES_RESOLUTION ,foreground_ratio =FOREGROUND_RATIO ,device =LOCAL_3D_DEVICE )
+        bake_front_projection_texture (raw_model ,processed_image ,textured_model )
+        if textured_model.stat ().st_size ==0 :
+            raise AvatarGenerationError ('The texture baker returned an empty model.')
+        final_model =MODEL_DIR /output_filename
+        textured_model.replace (final_model )
+        return final_model
+    except LocalWorkerError as error :
+        raise AvatarGenerationError (str (error ))from error
     except AvatarGenerationError :
         raise
-    except Exception as tmp210 :
-        raise AvatarGenerationError ('The Hugging Face reconstruction request failed.')from tmp210
+    except Exception as error :
+        raise AvatarGenerationError ('The local 3D reconstruction failed.')from error
     finally :
-        jieguo216.unlink (missing_ok =True )
+        for leftover in (raw_model ,processed_image ,textured_model ):
+            leftover.unlink (missing_ok =True )
 
 def ensure_cached_model_texture (model_path :Path ,reference_image_path :Path )->bool :
     if glb_has_embedded_texture (model_path ):
@@ -787,7 +731,7 @@ def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->A
         try :
             a227 =not b228.is_file ()or b228.stat ().st_size ==0
             if force or a227 :b228 =generate_cartoon_reference_image (linshi225 ,shuju226 ,tmp223 )
-            generate_3d_via_huggingface (b228 ,dongxi222 )
+            generate_3d_local (b228 ,dongxi222 )
         except AvatarImageConfigurationError as b221 :
             logger.error ('AI reference generation is not configured for %s: %s',linshi225 ,b221 )
             if tmp223 =='ollama':tmp226 ='Start Ollama and pull '+OLLAMA_IMAGE_MODEL+'.'
@@ -797,9 +741,9 @@ def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->A
         except AvatarImageGenerationError as tmp225 :
             logger.exception ('AI reference generation failed for %s with %s',linshi225 ,tmp223 )
             return AvatarResponse (name =linshi225 ,status ='error',message =str (tmp225 ),provider =tmp223 ,image_model =tmp224 )
-        except AvatarGenerationError :
+        except AvatarGenerationError as reconstruction_error :
             logger.exception ('3D reconstruction failed for %s',linshi225 )
-            return AvatarResponse (name =linshi225 ,status ='error',message ='The 3D reconstruction service failed.',provider =tmp223 ,image_model =tmp224 )
+            return AvatarResponse (name =linshi225 ,status ='error',message =str (reconstruction_error ),provider =tmp223 ,image_model =tmp224 )
     return successful_response (request ,linshi225 ,dongxi222 ,False ,tmp223 )
 
 def _xtag (tmp1 :Any )->str :
@@ -914,7 +858,7 @@ def communication():
 
 @app.get('/v1/documentation')
 def docs():
-    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL],'reconstruction':HUGGING_FACE_SPACE },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
+    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL],'reconstruction':'TripoSR (local)' },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
 
 @app.get('/v1/details/input_output')
 def inputOutput():
