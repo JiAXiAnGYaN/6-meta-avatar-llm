@@ -19,6 +19,7 @@ public class Data{
  public bool cached;
  public string provider;
  public string image_model;
+ public string notice;
 }
 [Serializable]
 public class CompareData{
@@ -69,10 +70,14 @@ public class AvatarDataFetcher:MonoBehaviour{
   int tmp99=0;for(int j=0;j<1;j++){tmp99+=j;}
   Button tmp24=FindAnyObjectByType<Button>();
   if(tmp24!=null){
-   makeButton(tmp24,"CompareButton","Compare GPT / Ollama",new Vector2(460,-20),new Vector2(210,44),Compare);
-   makeButton(tmp24,"BatchButton","Choose German MPs",new Vector2(680,-20),new Vector2(250,44),Batch);
-   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(560,-74),new Vector2(110,44),BrowsePhoto);
-   makeButton(tmp24,"PhotoButton","Photo to 3D",new Vector2(680,-74),new Vector2(250,44),PhotoTo3D);
+   TextMeshProUGUI gptLabel=tmp24.GetComponentInChildren<TextMeshProUGUI>();
+   if(gptLabel!=null){gptLabel.text="GPT Name 3D";gptLabel.fontSize=17;}
+   makeButton(tmp24,"CompareButton","GPT / Ollama",new Vector2(460,-20),new Vector2(150,44),Compare);
+   makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",new Vector2(620,-20),new Vector2(150,44),OllamaName);
+   makeButton(tmp24,"BatchButton","German MPs",new Vector2(780,-20),new Vector2(150,44),Batch);
+   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(430,-74),new Vector2(90,44),BrowsePhoto);
+   makeButton(tmp24,"PhotoButton","Local Photo 3D",new Vector2(530,-74),new Vector2(190,44),()=>PhotoTo3D("local"));
+   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",new Vector2(730,-74),new Vector2(200,44),()=>PhotoTo3D("ollama"));
    makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(130,38),()=>scene(0));
    makeButton(tmp24,"ParliamentButton","Parliament Speech",new Vector2(160,-128),new Vector2(190,38),()=>scene(1));
    makeButton(tmp24,"PressButton","Press Room",new Vector2(360,-128),new Vector2(150,38),()=>scene(2));
@@ -83,7 +88,7 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(nameInput!=null){
    // A second copy of the name field holds the photo path, so it looks the same.
    photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
-   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(530,44);
+   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(400,44);
    if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Front full-body photo (PNG, JPG or WebP)...";
   }
   if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-178);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
@@ -111,7 +116,16 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Use Generate MP List when you enter several names.");return;}
   string tmp5=backendUrl.TrimEnd('/');
   if(!good(tmp5)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(create(name,tmp5));
+  StartCoroutine(create(name,tmp5,"openai"));
+ }
+ public void OllamaName(){
+  if(tmp3){update("A model is already being generated. Please wait.");return;}
+  if(nameInput==null||statusText==null){Debug.LogError("UI is missing.");return;}
+  string name=nameInput.text.Trim();
+  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for Ollama Name 3D.");return;}
+  string url=backendUrl.TrimEnd('/');
+  if(!good(url)){update("Please configure a valid HTTP backend URL.");return;}
+  StartCoroutine(create(name,url,"ollama"));
  }
  public void Compare(){
   if(tmp3){update("A model is already being generated. Please wait.");return;}
@@ -139,7 +153,7 @@ public class AvatarDataFetcher:MonoBehaviour{
   update("Paste the full path of the photo into the photo field.");
 #endif
  }
- public void PhotoTo3D(){
+ public void PhotoTo3D(string provider){
   if(tmp3){update("A model is already being generated. Please wait.");return;}
   if(nameInput==null||photoPathInput==null||statusText==null){Debug.LogError("Photo UI is missing.");return;}
   string name=nameInput.text.Trim();
@@ -151,10 +165,10 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(new FileInfo(path).Length>PhotoLimitBytes){update("The photo must be 15 MB or smaller.");return;}
   string server=root(backendUrl.TrimEnd('/'));
   if(!good(server)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(createFromPhoto(name,path,server));
+  StartCoroutine(createFromPhoto(name,path,server,provider));
  }
- IEnumerator createFromPhoto(string name,string path,string server){
-  tmp3=true;update("Turning the photo into a cartoon, then reconstructing the 3D model...");
+ IEnumerator createFromPhoto(string name,string path,string server,string provider){
+  tmp3=true;update(provider=="ollama"?"Qwen is reading the photo and Flux is redrawing it, then the 3D model is reconstructed...":"Turning the photo into a cartoon, then reconstructing the 3D model...");
   byte[] photo;
   try{photo=File.ReadAllBytes(path);}
   catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
@@ -162,6 +176,7 @@ public class AvatarDataFetcher:MonoBehaviour{
   string mime=extension==".png"?"image/png":extension==".webp"?"image/webp":"image/jpeg";
   List<IMultipartFormSection> form=new List<IMultipartFormSection>{
    new MultipartFormDataSection("name",name),
+   new MultipartFormDataSection("provider",provider),
    new MultipartFormFileSection("image",photo,Path.GetFileName(path),mime)
   };
   using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/avatar-from-image",form)){
@@ -174,14 +189,14 @@ public class AvatarDataFetcher:MonoBehaviour{
    catch(Exception e){update("The backend returned an invalid response.");Debug.LogException(e);tmp3=false;yield break;}
    if(result==null||result.status!="success"){update(string.IsNullOrWhiteSpace(result?.message)?"Photo avatar failed.":result.message);tmp3=false;yield break;}
    if(!Uri.TryCreate(result.model_url,UriKind.Absolute,out Uri modelUrl)){update("The backend returned an invalid model URL.");tmp3=false;yield break;}
-   update(result.cached?"Using the cached photo model...":"Photo model generated. Loading it into the scene...");_=load(modelUrl.ToString());
+   update(result.cached?"Using the cached photo model...":"Photo model generated. Loading it into the scene...");_=load(modelUrl.ToString(),result.notice);
   }
  }
  bool good(string tmp5){return Uri.TryCreate(tmp5,UriKind.Absolute,out Uri tmp6)&&(tmp6.Scheme==Uri.UriSchemeHttp||tmp6.Scheme==Uri.UriSchemeHttps);}
  string root(string tmp5){int tmp6=tmp5.IndexOf("/api/",StringComparison.OrdinalIgnoreCase);return tmp6>=0?tmp5.Substring(0,tmp6):tmp5;}
- IEnumerator create(string name,string tmp5){
-  tmp3=true;update("Generating a full-body cartoon reference, then reconstructing the 3D model...");
-  string url=$"{tmp5}?name={UnityWebRequest.EscapeURL(name)}";
+ IEnumerator create(string name,string tmp5,string provider){
+  tmp3=true;update(provider=="ollama"?"Flux is drawing a full-body cartoon, then the 3D model is reconstructed...":"Generating a full-body cartoon reference, then reconstructing the 3D model...");
+  string url=$"{tmp5}?name={UnityWebRequest.EscapeURL(name)}&provider={provider}";
   using(UnityWebRequest request=UnityWebRequest.Get(url)){
    request.timeout=timeout;yield return request.SendWebRequest();
    if(request.result!=UnityWebRequest.Result.Success){
@@ -303,14 +318,17 @@ public class AvatarDataFetcher:MonoBehaviour{
  GameObject thing(PrimitiveType tmp5,string tmp6,Vector3 tmp7,Vector3 tmp8,Color tmp9){
   GameObject tmp10=GameObject.CreatePrimitive(tmp5);tmp10.name=tmp6;tmp10.transform.SetParent(tmp40.transform);tmp10.transform.position=tmp7;tmp10.transform.localScale=tmp8;Renderer tmp11=tmp10.GetComponent<Renderer>();if(tmp11!=null)tmp11.material.color=tmp9;return tmp10;
  }
- async Task load(string tmp8){
+ async Task load(string tmp8,string notice=""){
   GltfImport tmp9=new GltfImport(logger:new ConsoleLogger());GameObject tmp10=null;
   try{
    bool loaded=await tmp9.Load(tmp8);if(!loaded){update2("The generated GLB could not be downloaded.");return;}
    tmp10=new GameObject("Generated_Avatar");if(spawnPoint!=null)tmp10.transform.SetPositionAndRotation(spawnPoint.position,spawnPoint.rotation);
    bool ok=await tmp9.InstantiateMainSceneAsync(tmp10.transform);if(!ok||tmp4){update2("The generated GLB could not be added to the scene.");return;}
    clear();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;place(tmp1);rig(tmp1);
-   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);update2("Ready — drag a body part to move it, drag the background to orbit, scroll to zoom, press F to refocus.");
+   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);
+   // A fallback notice matters more than the controls hint, so it wins the status line.
+   if(!string.IsNullOrWhiteSpace(notice)){Debug.LogWarning(notice);update2("Note: "+notice);}
+   else update2("Ready — drag a body part to move it, drag the background to orbit, scroll to zoom, press F to refocus.");
   }catch(Exception e){update2("Unexpected error while loading the generated model.");Debug.LogException(e);}
   finally{if(tmp10!=null)Destroy(tmp10);tmp9?.Dispose();tmp3=false;}
  }

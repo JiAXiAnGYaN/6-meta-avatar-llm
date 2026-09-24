@@ -53,6 +53,9 @@ OLLAMA_IMAGE_API_URL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_API_URL','http://127.
 OLLAMA_IMAGE_MODEL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_MODEL','x/flux2-klein:4b')
 OLLAMA_IMAGE_SIZE =os.getenv ('META_AVATAR_OLLAMA_IMAGE_SIZE','768x1024')
 OLLAMA_IMAGE_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_TIMEOUT','900'))
+OLLAMA_IMAGE_STEPS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_STEPS','4'))
+OLLAMA_TEXT_API_URL =os.getenv ('META_AVATAR_OLLAMA_TEXT_API_URL',OLLAMA_IMAGE_API_URL )
+OLLAMA_TEXT_MODEL =os.getenv ('META_AVATAR_OLLAMA_TEXT_MODEL','qwen3.5:4b')
 BATCH_LIMIT =int (os.getenv ('META_AVATAR_BATCH_LIMIT','20'))
 BUNDESTAG_URL =os.getenv ('META_AVATAR_BUNDESTAG_URL','https://www.bundestag.de/resource/blob/472878/MdB-Stammdaten.zip')
 BUNDESTAG_PERIOD =int (os.getenv ('META_AVATAR_BUNDESTAG_PERIOD','21'))
@@ -98,6 +101,7 @@ class AvatarResponse (BaseModel ):
     cached :bool =False
     provider :str =''
     image_model :str =''
+    notice :str =''
 
 class CompareResponse (BaseModel ):
     name :str
@@ -314,41 +318,128 @@ def _call_openai_image_api (prompt :str )->bytes :
         raise AvatarImageGenerationError ('The OpenAI image service did not return the requested PNG image.')
     return shuju51
 
-def _call_ollama_image_api (prompt :str )->bytes :
-    tmp60 =OLLAMA_IMAGE_SIZE.split ('x')
-    a61 =json.dumps ({'model':OLLAMA_IMAGE_MODEL ,'prompt':prompt ,'width':int (tmp60 [0 ]),'height':int (tmp60 [1 ]),'stream':False }).encode ('utf-8')
-    b62 =UrlRequest (OLLAMA_IMAGE_API_URL ,data =a61 ,headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
+def _ollama_request (url :str ,body :dict [str ,Any ],limit :int ,what :str )->dict [str ,Any ]:
+    request =UrlRequest (url ,data =json.dumps (body ).encode ('utf-8'),headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
     try :
-        with urlopen (b62 ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as tmp63 :
-            tmp64 =tmp63.read (OPENAI_IMAGE_RESPONSE_LIMIT_BYTES +1 )
-    except HTTPError as tmp65 :
-        tmp66 =''
+        with urlopen (request ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as response :
+            payload =response.read (limit +1 )
+    except HTTPError as error :
+        detail =''
         try :
-            tmp66 =tmp65.read (4096 ).decode ('utf-8','replace')
-            tmp67 =json.loads (tmp66 )
-            if isinstance (tmp67 ,dict ):tmp66 =str (tmp67.get ('error','')).strip ()
+            detail =str (json.loads (error.read (4096 ).decode ('utf-8','replace')).get ('error','')).strip ()
         except Exception :
             pass
-        logger.warning ('Ollama image request returned HTTP %s: %s',tmp65.code ,tmp66 )
-        if tmp66 =='image generation models are not currently supported':
-            tmp66 ='Ollama '+tmp66 +'. Use Ollama 0.32.5 for image generation.'
-        elif tmp66 :tmp66 ='Ollama error: '+tmp66
-        else :tmp66 ='Ollama rejected the image request.'
-        raise AvatarImageGenerationError (tmp66 )from tmp65
-    except (URLError ,TimeoutError ,OSError )as tmp65 :
-        raise AvatarImageConfigurationError ('Ollama could not be reached. Start Ollama and pull the configured image model.')from tmp65
-    if len (tmp64 )>OPENAI_IMAGE_RESPONSE_LIMIT_BYTES :
-        raise AvatarImageGenerationError ('The Ollama image response was too large.')
+        logger.warning ('Ollama %s request returned HTTP %s: %s',what ,error.code ,detail )
+        if detail =='image generation models are not currently supported':
+            raise AvatarImageConfigurationError ('This Ollama version cannot generate images. Use Ollama 0.32.5.')from error
+        if 'not found'in detail :
+            raise AvatarImageConfigurationError (f'Ollama does not have {body ["model"]} yet. Run: ollama pull {body ["model"]}')from error
+        raise AvatarImageGenerationError (f'Ollama {what} error: {detail or error.code }')from error
+    except (URLError ,TimeoutError ,OSError )as error :
+        raise AvatarImageConfigurationError ('Ollama is not running. Start the Ollama app or run: ollama serve')from error
+    if len (payload )>limit :
+        raise AvatarImageGenerationError (f'The Ollama {what} response was too large.')
     try :
-        a66 =json.loads (tmp64 )
-        b67 =a66 ['image']
-        if not isinstance (b67 ,str )or not b67 :raise ValueError ('Missing image')
-        tmp68 =base64.b64decode (b67 ,validate =True )
-    except (KeyError ,TypeError ,ValueError ,json.JSONDecodeError )as tmp65 :
-        raise AvatarImageGenerationError ('Ollama returned an invalid image response.')from tmp65
-    if not tmp68.startswith (b'\x89PNG\r\n\x1a\n'):
+        return json.loads (payload )
+    except json.JSONDecodeError as error :
+        raise AvatarImageGenerationError (f'Ollama returned an invalid {what} response.')from error
+
+def _call_ollama_image_api (prompt :str ,reference_png :bytes |None =None )->bytes :
+    """Generate one image with Flux. With reference_png Flux redraws that picture."""
+    width ,height =(int (part )for part in OLLAMA_IMAGE_SIZE.split ('x'))
+    # keep_alive 0 unloads Flux straight away so TripoSR gets the memory back.
+    body ={'model':OLLAMA_IMAGE_MODEL ,'prompt':prompt ,'width':width ,'height':height ,'steps':OLLAMA_IMAGE_STEPS ,'stream':False ,'keep_alive':0 }
+    if reference_png :
+        body ['images']=[base64.b64encode (reference_png ).decode ('ascii')]
+    result =_ollama_request (OLLAMA_IMAGE_API_URL ,body ,OPENAI_IMAGE_RESPONSE_LIMIT_BYTES ,'image')
+    try :
+        image =base64.b64decode (result ['image'],validate =True )
+    except (KeyError ,TypeError ,ValueError )as error :
+        raise AvatarImageGenerationError ('Ollama returned no image.')from error
+    if not image.startswith (b'\x89PNG\r\n\x1a\n'):
         raise AvatarImageGenerationError ('Ollama did not return a PNG image.')
-    return tmp68
+    return image
+
+def _call_ollama_text_api (prompt :str ,image_png :bytes |None =None ,json_mode :bool =False )->str :
+    body ={'model':OLLAMA_TEXT_MODEL ,'prompt':prompt ,'stream':False ,'think':False ,'keep_alive':0 ,'options':{'temperature':0 }}
+    if image_png :
+        body ['images']=[base64.b64encode (image_png ).decode ('ascii')]
+    if json_mode :
+        body ['format']='json'
+    text =_ollama_request (OLLAMA_TEXT_API_URL ,body ,2 *1024 *1024 ,'text').get ('response','')
+    if not isinstance (text ,str )or not text.strip ():
+        raise AvatarImageGenerationError ('Qwen returned an empty answer.')
+    return re.sub ('<think>.*?</think>','',text ,flags =re.DOTALL ).strip ()
+
+APPEARANCE_QUESTION ="""Look at the person in the image and answer in JSON. Only describe what is visible; never guess identity, age, ethnicity, health or opinions.
+{"bald_on_top": is the top of the head bald or mostly bald? true or false,
+ "hair_colour": colour of the visible hair, or "none",
+ "hair_length": "none" | "short" | "medium" | "long",
+ "glasses": true or false,
+ "facial_hair": "none" | "stubble" | "moustache" | "beard",
+ "jacket": colour word or "none",
+ "shirt": colour word,
+ "tie": colour word or "none",
+ "trousers": colour word,
+ "shoes": colour word}"""
+
+def _clean_word (value :Any ,fallback :str ='')->str :
+    """Keep a short colour or style word from the model and drop anything else."""
+    text =re.sub ('[^a-zA-Z -]','',str (value or '')).strip ().lower ()
+    return ' '.join (text.split ()[:3 ])or fallback
+
+def describe_visible_appearance (photo_png :bytes )->dict [str ,Any ]:
+    """Ask Qwen to fill a fixed form about what the photo shows.
+
+    A small vision model is far more reliable answering fixed yes/no and
+    colour questions than writing free text, and the code then turns the
+    answers into a prompt it controls.
+    """
+    answer =_call_ollama_text_api (APPEARANCE_QUESTION ,photo_png ,json_mode =True )
+    try :
+        raw =json.loads (answer )
+    except json.JSONDecodeError as error :
+        raise AvatarImageGenerationError ('Qwen did not return valid JSON.')from error
+    if not isinstance (raw ,dict ):
+        raise AvatarImageGenerationError ('Qwen did not return a JSON object.')
+    return {
+    'bald_on_top':raw.get ('bald_on_top')is True ,
+    'hair_colour':_clean_word (raw.get ('hair_colour'),'none'),
+    'hair_length':_clean_word (raw.get ('hair_length'),'short'),
+    'glasses':raw.get ('glasses')is True ,
+    'facial_hair':_clean_word (raw.get ('facial_hair'),'none'),
+    'jacket':_clean_word (raw.get ('jacket'),'none'),
+    'shirt':_clean_word (raw.get ('shirt'),'white'),
+    'tie':_clean_word (raw.get ('tie'),'none'),
+    'trousers':_clean_word (raw.get ('trousers'),'dark'),
+    'shoes':_clean_word (raw.get ('shoes'),'black'),
+    }
+
+def appearance_phrase (traits :dict [str ,Any ])->str :
+    hair_colour =traits ['hair_colour']
+    if traits ['bald_on_top']:
+        hair ='bald on top'+(f' with short {hair_colour } hair on the sides'if hair_colour !='none'else '')
+    elif traits ['hair_length']=='none':
+        hair ='shaved head'
+    else :
+        hair =f'{traits ["hair_length"]} {hair_colour } hair'.replace (' none ',' ')
+    parts =[hair ,'wearing glasses'if traits ['glasses']else 'no glasses']
+    parts .append ('clean-shaven'if traits ['facial_hair']=='none'else traits ['facial_hair'])
+    clothes =[]
+    if traits ['jacket']!='none':
+        clothes .append (f'{traits ["jacket"]} suit jacket')
+    clothes .append (f'{traits ["shirt"]} shirt')
+    if traits ['tie']!='none':
+        clothes .append (f'{traits ["tie"]} tie')
+    clothes +=[f'{traits ["trousers"]} trousers',f'{traits ["shoes"]} shoes']
+    return ', '.join (parts )+', '+', '.join (clothes )
+
+def build_flux_photo_prompt (traits :dict [str ,Any ]|None )->str :
+    look =f' The person has: {appearance_phrase (traits )}.'if traits else ''
+    return ('Redraw the person in the input image as a polished 3D animated-film cartoon character.'
+            +look +
+            ' Keep the same face and body shape. One person, full body from head to shoes, front view, '
+            'neutral A-pose with both arms straight down, hands and shoes visible, plain light gray background.')
 
 def _generated_reference_is_usable (image_bytes :bytes ,strict :bool =True )->bool :
     try :
@@ -383,7 +474,6 @@ def generate_cartoon_reference_image (name :str ,output_filename :str ,provider 
             raise
         except AvatarImageGenerationError as tmp63 :
             a66 =tmp63
-            if provider =='ollama'and ('not currently supported'in str (tmp63 )or 'model requires'in str (tmp63 )):raise
             if jieguo62 <OPENAI_IMAGE_ATTEMPTS :
                 time.sleep (jieguo62 )
             continue
@@ -643,14 +733,19 @@ def bake_front_projection_texture (source_glb_path :Path ,reference_image_path :
     _write_glb (output_glb_path ,linshi169 ,bytes (jieguo167 ))
     return output_glb_path
 
-def photo_model_filename (name :str ,photo_png :bytes )->str :
+def photo_model_filename (name :str ,photo_png :bytes ,provider :str ='local')->str :
     """Cache key for a photo avatar: same name, same photo, same settings, same file."""
     clean_name =normalize_name (name )
     slug =unicodedata.normalize ('NFKD',clean_name ).encode ('ascii','ignore').decode ('ascii')
     slug =re.sub ('[^a-zA-Z0-9]+','-',slug ).strip ('-').lower ()[:48 ]or 'avatar'
-    settings =':'.join ((PIPELINE_VERSION ,'photo','local-sd',str (LOCAL_PHOTO_STRENGTH ),str (MARCHING_CUBES_RESOLUTION ),clean_name.casefold ()))
+    if provider =='ollama':
+        recipe =('ollama',OLLAMA_TEXT_MODEL ,OLLAMA_IMAGE_MODEL ,OLLAMA_IMAGE_SIZE ,str (OLLAMA_IMAGE_STEPS ))
+    else :
+        recipe =('local-sd',str (LOCAL_PHOTO_STRENGTH ))
+    settings =':'.join ((PIPELINE_VERSION ,'photo',*recipe ,str (MARCHING_CUBES_RESOLUTION ),clean_name.casefold ()))
     digest =hashlib.sha256 (settings.encode ('utf-8')+b':'+photo_png ).hexdigest ()[:10 ]
-    return f'{slug}-{PIPELINE_VERSION}-photo-{digest}.glb'
+    suffix ='-ollama'if provider =='ollama'else ''
+    return f'{slug}-{PIPELINE_VERSION}-photo{suffix}-{digest}.glb'
 
 def prepare_uploaded_photo (photo :bytes )->bytes :
     """Validate an uploaded photo and return it as PNG bytes."""
@@ -683,12 +778,12 @@ def prepare_uploaded_photo (photo :bytes )->bytes :
         raise AvatarImageGenerationError ('The image could not be converted to PNG.')
     return png.tobytes ()
 
-def build_photo_cartoon_prompt (name :str )->str :
+def build_photo_cartoon_prompt (name :str ,traits :dict [str ,Any ]|None =None )->str :
     return (f'3D cartoon version of the same person in the input image, {name}, keep the same face, hair, clothes '
             'and body shape, one full body, front view, neutral A pose, both arms down, hands and shoes visible, '
-            'clean detailed face, plain light gray background')
+            'clean detailed face, plain light gray background'+(', '+appearance_phrase (traits )if traits else ''))
 
-def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )->Path :
+def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str ,traits :dict [str ,Any ]|None =None )->Path :
     """Turn the photo into a cartoon reference, retrying until the pose check passes."""
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
         raise ValueError ('output_filename must be a plain .png filename')
@@ -702,7 +797,7 @@ def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )-
             candidate =MODEL_DIR /f'.photo-cartoon-{uuid4().hex}.png'
             try :
                 logger.info ('Turning uploaded photo into a cartoon (%d/%d)',attempt ,LOCAL_IMAGE_ATTEMPTS )
-                run_photo_cartoon (photo_path ,candidate ,build_photo_cartoon_prompt (name ),models_dir =LOCAL_MODELS_DIR ,device =LOCAL_IMAGE_DEVICE ,strength =LOCAL_PHOTO_STRENGTH ,seed =base_seed +attempt )
+                run_photo_cartoon (photo_path ,candidate ,build_photo_cartoon_prompt (name ,traits ),models_dir =LOCAL_MODELS_DIR ,device =LOCAL_IMAGE_DEVICE ,strength =LOCAL_PHOTO_STRENGTH ,seed =base_seed +attempt )
                 if _generated_reference_is_usable (candidate.read_bytes (),strict =False ):
                     final_path =MODEL_DIR /output_filename
                     candidate.replace (final_path )
@@ -719,6 +814,46 @@ def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )-
         raise AvatarImageGenerationError (str (last_error ))
     finally :
         photo_path.unlink (missing_ok =True )
+
+def generate_ollama_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )->tuple [Path ,str ,str ]:
+    """Qwen reads the photo, Flux redraws it. Returns (image, model used, notice).
+
+    When Flux cannot run (Ollama missing, wrong version, model not pulled)
+    local Stable Diffusion takes over, and the notice says so, so the user
+    always knows which model made the picture.
+    """
+    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
+        raise ValueError ('output_filename must be a plain .png filename')
+    traits :dict [str ,Any ]|None =None
+    try :
+        traits =describe_visible_appearance (photo_png )
+        logger.info ('Qwen sees: %s',appearance_phrase (traits ))
+    except (AvatarImageConfigurationError ,AvatarImageGenerationError )as error :
+        logger.warning ('Qwen could not describe the photo: %s',error )
+    prompt =build_flux_photo_prompt (traits )
+    last_error :Exception |None =None
+    for attempt in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
+        logger.info ('Redrawing uploaded photo with %s (%d/%d)',OLLAMA_IMAGE_MODEL ,attempt ,LOCAL_IMAGE_ATTEMPTS )
+        try :
+            cartoon =_call_ollama_image_api (prompt ,photo_png )
+        except AvatarImageConfigurationError as error :
+            logger.warning ('Flux is not available, using local Stable Diffusion: %s',error )
+            path =generate_photo_cartoon (name ,photo_png ,output_filename ,traits )
+            return path ,'Stable Diffusion 1.5 img2img',f'Flux was not available, so local Stable Diffusion made the cartoon. Reason: {error }'
+        except AvatarImageGenerationError as error :
+            last_error =error
+            continue
+        if not _generated_reference_is_usable (cartoon ,strict =False ):
+            last_error =AvatarImageGenerationError ('Flux lost the front full-body pose. Try a photo with a plainer background.')
+            continue
+        final_path =MODEL_DIR /output_filename
+        temporary =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.tmp'
+        temporary.write_bytes (cartoon )
+        temporary.replace (final_path )
+        model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if traits else OLLAMA_IMAGE_MODEL
+        notice ='' if traits else 'Qwen could not read the photo, so Flux worked from the image alone.'
+        return final_path ,model ,notice
+    raise AvatarImageGenerationError (str (last_error )if last_error else 'Flux could not redraw the photo.')
 
 def generate_3d_local (reference_image_path :Path ,output_filename :str )->Path :
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.glb'):
@@ -816,7 +951,7 @@ def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->A
             generate_3d_local (b228 ,dongxi222 )
         except AvatarImageConfigurationError as b221 :
             logger.error ('AI reference generation is not configured for %s: %s',linshi225 ,b221 )
-            if tmp223 =='ollama':tmp226 ='Start Ollama and pull '+OLLAMA_IMAGE_MODEL+'.'
+            if tmp223 =='ollama':tmp226 =str (b221 )
             elif 'OPENAI_API_KEY'in str (b221 ):tmp226 ='Set OPENAI_API_KEY before starting the backend.'
             else :tmp226 ='OpenAI TLS certificate verification failed.'
             return AvatarResponse (name =linshi225 ,status ='error',message =tmp226 ,provider =tmp223 ,image_model =tmp224 )
@@ -890,9 +1025,14 @@ def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length
     return _create_avatar (request ,name ,force ,provider )
 
 @app.post ('/api/avatar-from-image',response_model =AvatarResponse )
-async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ))->AvatarResponse :
+async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ),provider :str =Form (default ='local'))->AvatarResponse :
     clean_name =_valid_name (name )
-    image_model ='Stable Diffusion 1.5 img2img'
+    provider =provider.strip ().lower ()
+    if provider not in {'local','ollama'}:
+        await image.close ()
+        raise HTTPException (status_code =422 ,detail ='provider must be local or ollama')
+    label ='photo-ollama'if provider =='ollama'else 'photo'
+    image_model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if provider =='ollama'else 'Stable Diffusion 1.5 img2img'
     try :
         upload =await image.read (UPLOAD_LIMIT_BYTES +1 )
     finally :
@@ -900,23 +1040,27 @@ async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,m
     try :
         photo_png =prepare_uploaded_photo (upload )
     except AvatarImageGenerationError as error :
-        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo',image_model =image_model )
-    filename =photo_model_filename (clean_name ,photo_png )
+        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider =label ,image_model =image_model )
+    filename =photo_model_filename (clean_name ,photo_png ,provider )
     model_path =MODEL_DIR /filename
     reference_path =MODEL_DIR /reference_image_filename (filename )
+    notice =''
     with _generation_lock (filename ):
         cached =not force and model_path.is_file ()and model_path.stat ().st_size >0 and reference_path.is_file ()
         if cached :
             logger.info ('Serving cached photo avatar for %s',clean_name )
         else :
             try :
-                generate_photo_cartoon (clean_name ,photo_png ,reference_path.name )
+                if provider =='ollama':
+                    _ ,image_model ,notice =generate_ollama_photo_cartoon (clean_name ,photo_png ,reference_path.name )
+                else :
+                    generate_photo_cartoon (clean_name ,photo_png ,reference_path.name )
                 generate_3d_local (reference_path ,filename )
             except (AvatarImageGenerationError ,AvatarGenerationError )as error :
                 logger.exception ('Photo avatar failed for %s',clean_name )
-                return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo',image_model =image_model )
-    response =successful_response (request ,clean_name ,filename ,cached ,'photo')
-    return response.model_copy (update ={'image_model':image_model })
+                return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider =label ,image_model =image_model )
+    response =successful_response (request ,clean_name ,filename ,cached ,label )
+    return response.model_copy (update ={'image_model':image_model ,'notice':notice })
 
 @app.get ('/api/compare',response_model =CompareResponse )
 def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ))->CompareResponse :
@@ -969,7 +1113,7 @@ def communication():
 
 @app.get('/v1/documentation')
 def docs():
-    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL],'reconstruction':'TripoSR (local)' },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
+    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL,OLLAMA_TEXT_MODEL],'reconstruction':'TripoSR (local)' },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
 
 @app.get('/v1/details/input_output')
 def inputOutput():
