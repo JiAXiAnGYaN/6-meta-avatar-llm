@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 using GLTFast;
 using GLTFast.Logging;
@@ -51,6 +52,8 @@ public class AvatarDataFetcher:MonoBehaviour{
  int tmp23=-1;
  GameObject tmp40;
  bool walking;
+ TMP_InputField photoPathInput;
+ const long PhotoLimitBytes=15L*1024*1024;
  bool tmp41;
  bool tmp42;
  string[] tmp43=Array.Empty<string>();
@@ -68,14 +71,22 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(tmp24!=null){
    makeButton(tmp24,"CompareButton","Compare GPT / Ollama",new Vector2(460,-20),new Vector2(210,44),Compare);
    makeButton(tmp24,"BatchButton","Choose German MPs",new Vector2(680,-20),new Vector2(250,44),Batch);
-   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-74),new Vector2(130,38),()=>scene(0));
-   makeButton(tmp24,"ParliamentButton","Parliament Speech",new Vector2(160,-74),new Vector2(190,38),()=>scene(1));
-   makeButton(tmp24,"PressButton","Press Room",new Vector2(360,-74),new Vector2(150,38),()=>scene(2));
-   makeButton(tmp24,"ElectionButton","Election Stage",new Vector2(520,-74),new Vector2(170,38),()=>scene(3));
-   makeButton(tmp24,"WalkButton","Walk",new Vector2(700,-74),new Vector2(110,38),walk);
+   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(560,-74),new Vector2(110,44),BrowsePhoto);
+   makeButton(tmp24,"PhotoButton","Photo to 3D",new Vector2(680,-74),new Vector2(250,44),PhotoTo3D);
+   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(130,38),()=>scene(0));
+   makeButton(tmp24,"ParliamentButton","Parliament Speech",new Vector2(160,-128),new Vector2(190,38),()=>scene(1));
+   makeButton(tmp24,"PressButton","Press Room",new Vector2(360,-128),new Vector2(150,38),()=>scene(2));
+   makeButton(tmp24,"ElectionButton","Election Stage",new Vector2(520,-128),new Vector2(170,38),()=>scene(3));
+   makeButton(tmp24,"WalkButton","Walk",new Vector2(700,-128),new Vector2(110,38),walk);
   }
   if(nameInput!=null&&nameInput.placeholder is TMP_Text tmp25)tmp25.text="One name, or MP names separated by commas...";
-  if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-124);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
+  if(nameInput!=null){
+   // A second copy of the name field holds the photo path, so it looks the same.
+   photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
+   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(530,44);
+   if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Front full-body photo (PNG, JPG or WebP)...";
+  }
+  if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-178);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
   scene(0);
  }
  void makeButton(Button tmp24,string tmp25,string tmp26,Vector2 tmp27,Vector2 tmp28,UnityEngine.Events.UnityAction tmp29){
@@ -119,6 +130,52 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp41=true;tmp47=false;
   if(tmp43.Length==0&&!tmp42)StartCoroutine(members(root(tmp9)));
   else chooseTyped();
+ }
+ public void BrowsePhoto(){
+#if UNITY_EDITOR
+  string path=UnityEditor.EditorUtility.OpenFilePanelWithFilters("Choose a front full-body photo","",new[]{"Images","png,jpg,jpeg,webp"});
+  if(!string.IsNullOrEmpty(path)&&photoPathInput!=null)photoPathInput.text=path;
+#else
+  update("Paste the full path of the photo into the photo field.");
+#endif
+ }
+ public void PhotoTo3D(){
+  if(tmp3){update("A model is already being generated. Please wait.");return;}
+  if(nameInput==null||photoPathInput==null||statusText==null){Debug.LogError("Photo UI is missing.");return;}
+  string name=nameInput.text.Trim();
+  string path=photoPathInput.text.Trim().Trim('"');
+  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for the person in the photo.");return;}
+  if(string.IsNullOrWhiteSpace(path)||!File.Exists(path)){update("Choose an existing photo first.");return;}
+  string extension=Path.GetExtension(path).ToLowerInvariant();
+  if(extension!=".png"&&extension!=".jpg"&&extension!=".jpeg"&&extension!=".webp"){update("Choose a PNG, JPG or WebP photo.");return;}
+  if(new FileInfo(path).Length>PhotoLimitBytes){update("The photo must be 15 MB or smaller.");return;}
+  string server=root(backendUrl.TrimEnd('/'));
+  if(!good(server)){update("Please configure a valid HTTP backend URL.");return;}
+  StartCoroutine(createFromPhoto(name,path,server));
+ }
+ IEnumerator createFromPhoto(string name,string path,string server){
+  tmp3=true;update("Turning the photo into a cartoon, then reconstructing the 3D model...");
+  byte[] photo;
+  try{photo=File.ReadAllBytes(path);}
+  catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
+  string extension=Path.GetExtension(path).ToLowerInvariant();
+  string mime=extension==".png"?"image/png":extension==".webp"?"image/webp":"image/jpeg";
+  List<IMultipartFormSection> form=new List<IMultipartFormSection>{
+   new MultipartFormDataSection("name",name),
+   new MultipartFormFileSection("image",photo,Path.GetFileName(path),mime)
+  };
+  using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/avatar-from-image",form)){
+   request.timeout=timeout;yield return request.SendWebRequest();
+   if(request.result!=UnityWebRequest.Result.Success){
+    update($"Backend request failed (HTTP {request.responseCode}).");Debug.LogError(request.downloadHandler.text);tmp3=false;yield break;
+   }
+   Data result;
+   try{result=JsonUtility.FromJson<Data>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid response.");Debug.LogException(e);tmp3=false;yield break;}
+   if(result==null||result.status!="success"){update(string.IsNullOrWhiteSpace(result?.message)?"Photo avatar failed.":result.message);tmp3=false;yield break;}
+   if(!Uri.TryCreate(result.model_url,UriKind.Absolute,out Uri modelUrl)){update("The backend returned an invalid model URL.");tmp3=false;yield break;}
+   update(result.cached?"Using the cached photo model...":"Photo model generated. Loading it into the scene...");_=load(modelUrl.ToString());
+  }
  }
  bool good(string tmp5){return Uri.TryCreate(tmp5,UriKind.Absolute,out Uri tmp6)&&(tmp6.Scheme==Uri.UriSchemeHttp||tmp6.Scheme==Uri.UriSchemeHttps);}
  string root(string tmp5){int tmp6=tmp5.IndexOf("/api/",StringComparison.OrdinalIgnoreCase);return tmp6>=0?tmp5.Substring(0,tmp6):tmp5;}

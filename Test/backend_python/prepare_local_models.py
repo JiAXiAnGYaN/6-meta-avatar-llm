@@ -16,6 +16,25 @@ from huggingface_hub import snapshot_download
 
 DEFAULT_DIR = Path(__file__).resolve().parent / 'local_models'
 BACKGROUND_MODEL = 'u2net'
+CARTOON_REPO = 'stable-diffusion-v1-5/stable-diffusion-v1-5'
+# Only the fp16 weights: about 2.6 GB instead of 40 GB for the whole repository.
+CARTOON_FILES = [
+    'model_index.json',
+    'feature_extractor/preprocessor_config.json',
+    'scheduler/scheduler_config.json',
+    'tokenizer/merges.txt',
+    'tokenizer/special_tokens_map.json',
+    'tokenizer/tokenizer_config.json',
+    'tokenizer/vocab.json',
+    'safety_checker/config.json',
+    'safety_checker/model.fp16.safetensors',
+    'text_encoder/config.json',
+    'text_encoder/model.fp16.safetensors',
+    'unet/config.json',
+    'unet/diffusion_pytorch_model.fp16.safetensors',
+    'vae/config.json',
+    'vae/diffusion_pytorch_model.fp16.safetensors',
+]
 
 
 def present(folder: Path, names: list[str]) -> bool:
@@ -62,6 +81,14 @@ def download_background_model(root: Path) -> None:
     with_retries(f'{BACKGROUND_MODEL} background removal model', lambda: new_session(BACKGROUND_MODEL))
 
 
+def download_cartoon_model(root: Path) -> None:
+    folder = root / 'stable-diffusion-v1-5'
+    if present(folder, CARTOON_FILES):
+        return
+    with_retries('Stable Diffusion 1.5 (fp16)', lambda: snapshot_download(
+        repo_id=CARTOON_REPO, local_dir=str(folder), allow_patterns=CARTOON_FILES, max_workers=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dir', default=str(DEFAULT_DIR), help='where to store the models')
@@ -71,8 +98,9 @@ def main() -> None:
 
     download_triposr(root)
     download_background_model(root)
+    download_cartoon_model(root)
 
-    if not present(root, ['TripoSR/model/model.ckpt', 'TripoSR/source/tsr/system.py', f'u2net/{BACKGROUND_MODEL}.onnx']):
+    if not present(root, ['TripoSR/model/model.ckpt', 'TripoSR/source/tsr/system.py', f'u2net/{BACKGROUND_MODEL}.onnx']) or not present(root / 'stable-diffusion-v1-5', CARTOON_FILES):
         raise SystemExit('Some model files are still missing. Run the script again.')
     print(f'Local models are ready in {root}')
 

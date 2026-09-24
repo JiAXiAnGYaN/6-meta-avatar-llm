@@ -21,11 +21,11 @@ from urllib.request import urlopen
 from uuid import uuid4
 import certifi
 import uvicorn
-from fastapi import FastAPI ,HTTPException ,Query ,Request ,Response
+from fastapi import FastAPI ,File ,Form ,HTTPException ,Query ,Request ,Response ,UploadFile
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from local_worker import LocalWorkerError ,run_triposr
+from local_worker import LocalWorkerError ,ResultFlagged ,run_photo_cartoon ,run_triposr
 logging.basicConfig (level =os.getenv ('META_AVATAR_LOG_LEVEL','INFO').upper (),format ='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger =logging.getLogger ('meta_avatar')
 BASE_DIR =Path (__file__ ).resolve ().parent
@@ -34,6 +34,10 @@ MODEL_DIR.mkdir (parents =True ,exist_ok =True )
 PUBLIC_BASE_URL =os.getenv ('META_AVATAR_PUBLIC_BASE_URL','').rstrip ('/')
 LOCAL_MODELS_DIR =Path (os.getenv ('META_AVATAR_LOCAL_MODELS',str (BASE_DIR /'local_models'))).expanduser ()
 LOCAL_3D_DEVICE =os.getenv ('META_AVATAR_LOCAL_3D_DEVICE','cpu')
+LOCAL_IMAGE_DEVICE =os.getenv ('META_AVATAR_LOCAL_IMAGE_DEVICE','auto')
+LOCAL_PHOTO_STRENGTH =float (os.getenv ('META_AVATAR_LOCAL_PHOTO_STRENGTH','0.42'))
+LOCAL_IMAGE_ATTEMPTS =int (os.getenv ('META_AVATAR_LOCAL_IMAGE_ATTEMPTS','3'))
+UPLOAD_LIMIT_BYTES =int (os.getenv ('META_AVATAR_UPLOAD_LIMIT_MB','15'))*1024 *1024
 PIPELINE_VERSION ='ai-cartoon-v1'
 FOREGROUND_RATIO =float (os.getenv ('META_AVATAR_FOREGROUND_RATIO','0.9'))
 if not 0.5 <=FOREGROUND_RATIO <=1.0 :
@@ -197,64 +201,65 @@ def _get_pose_landmarker ()->Any :
 def _landmark_is_visible (landmark :Any ,threshold :float =0.55 )->bool :
     return float (getattr (landmark ,'visibility',0.0 ))>=threshold and float (getattr (landmark ,'presence',0.0 ))>=threshold and (-0.02 <=float (landmark.x )<=1.02 )and (-0.02 <=float (landmark.y )<=1.02 )
 
-def pose_is_front_full_body (landmarks :Any )->bool :
+def pose_is_front_full_body (landmarks :Any ,strict :bool =True )->bool :
+    """Check for one upright person facing the camera, head to shoes, arms down.
+
+    strict is for photos and GPT/Flux references. Stable Diffusion rarely
+    draws a perfectly level A-pose, so its output gets looser limits that
+    still rule out raised arms, crossed legs and side views.
+    """
     if not isinstance (landmarks ,(list ,tuple ))or len (landmarks )<33 :
         return False
-    b25 =landmarks [0 ]
-    b18 =landmarks [2 ]
-    linshi29 =landmarks [5 ]
-    linshi22 =landmarks [11 ]
-    dongxi33 =landmarks [12 ]
-    a17 =landmarks [13 ]
-    tmp28 =landmarks [14 ]
-    shuju23 =landmarks [15 ]
-    jieguo34 =landmarks [16 ]
-    jieguo20 =landmarks [23 ]
-    a31 =landmarks [24 ]
-    tmp21 =landmarks [25 ]
-    b32 =landmarks [26 ]
-    shuju16 =landmarks [27 ]
-    jieguo27 =landmarks [28 ]
-    dongxi19 =landmarks [31 ]
-    shuju30 =landmarks [32 ]
-    dongxi26 =(b25 ,b18 ,linshi29 ,linshi22 ,dongxi33 ,a17 ,tmp28 ,shuju23 ,jieguo34 ,jieguo20 ,a31 ,tmp21 ,b32 ,shuju16 ,jieguo27 ,dongxi19 ,shuju30 )
-    if not all ((_landmark_is_visible (linshi15 )for linshi15 in dongxi26 )):
+    (nose ,left_eye ,right_eye ,left_shoulder ,right_shoulder ,left_elbow ,right_elbow ,left_wrist ,right_wrist ,
+     left_hip ,right_hip ,left_knee ,right_knee ,left_ankle ,right_ankle ,left_foot ,right_foot )=(
+        landmarks [index ]for index in (0 ,2 ,5 ,11 ,12 ,13 ,14 ,15 ,16 ,23 ,24 ,25 ,26 ,27 ,28 ,31 ,32 ))
+    required =(nose ,left_eye ,right_eye ,left_shoulder ,right_shoulder ,left_elbow ,right_elbow ,left_wrist ,right_wrist ,
+               left_hip ,right_hip ,left_knee ,right_knee ,left_ankle ,right_ankle ,left_foot ,right_foot )
+    if not all (_landmark_is_visible (point )for point in required ):
         return False
-    jieguo13 =max (dongxi19.y ,shuju30.y ,shuju16.y ,jieguo27.y )
-    dongxi12 =jieguo13 -b25.y
-    if dongxi12 <0.45 :
+    body_height =max (left_foot.y ,right_foot.y ,left_ankle.y ,right_ankle.y )-nose.y
+    if body_height <0.45 :
         return False
-    a38 =abs (linshi22.x -dongxi33.x )
-    tmp14 =abs (jieguo20.x -a31.x )
-    if a38 /dongxi12 <0.12 or tmp14 /dongxi12 <0.07 :
+    shoulder_width =abs (left_shoulder.x -right_shoulder.x )
+    hip_width =abs (left_hip.x -right_hip.x )
+    if shoulder_width /body_height <0.12 or hip_width /body_height <0.07 :
         return False
-    if abs (b18.y -linshi29.y )>dongxi12 *0.035 :
+    shoulder_centre =(left_shoulder.x +right_shoulder.x )*0.5
+    if strict :
+        eye_tilt ,shoulder_tilt ,hip_tilt =0.035 ,0.055 ,0.055
+        nose_margin ,nose_offset =0.05 ,0.28
+        knee_gap ,ankle_gap =0.3 ,0.4
+    else :
+        eye_tilt ,shoulder_tilt ,hip_tilt =0.09 ,0.14 ,0.14
+        nose_margin ,nose_offset =0.1 ,0.75
+        knee_gap ,ankle_gap =0.15 ,0.2
+    if abs (left_eye.y -right_eye.y )>body_height *eye_tilt :
         return False
-    if abs (linshi22.y -dongxi33.y )>dongxi12 *0.055 :
+    if abs (left_shoulder.y -right_shoulder.y )>body_height *shoulder_tilt :
         return False
-    if abs (jieguo20.y -a31.y )>dongxi12 *0.055 :
+    if abs (left_hip.y -right_hip.y )>body_height *hip_tilt :
         return False
-    shuju37 =min (linshi22.x ,dongxi33.x )
-    linshi36 =max (linshi22.x ,dongxi33.x )
-    if not shuju37 -0.05 <=b25.x <=linshi36 +0.05 :
+    if not min (left_shoulder.x ,right_shoulder.x )-nose_margin <=nose.x <=max (left_shoulder.x ,right_shoulder.x )+nose_margin :
         return False
-    tmp35 =(linshi22.x +dongxi33.x )*0.5
-    if abs (b25.x -tmp35 )>a38 *0.28 :
+    if abs (nose.x -shoulder_centre )>shoulder_width *nose_offset :
         return False
-    a24 =min (jieguo20.y ,a31.y )-dongxi12 *0.08
-    if shuju23.y <a24 or jieguo34.y <a24 :
+    if abs (left_knee.x -right_knee.x )<hip_width *knee_gap or abs (left_ankle.x -right_ankle.x )<hip_width *ankle_gap :
         return False
-    if a17.y <linshi22.y -dongxi12 *0.02 or tmp28.y <dongxi33.y -dongxi12 *0.02 :
+    if not strict :
+        # Hands and elbows must not be lifted above the shoulders.
+        if left_wrist.y <left_shoulder.y -body_height *0.12 or right_wrist.y <right_shoulder.y -body_height *0.12 :
+            return False
+        return left_elbow.y >=left_shoulder.y -body_height *0.08 and right_elbow.y >=right_shoulder.y -body_height *0.08
+    # Strict: hands hang near the hips, elbows below the shoulders, and the
+    # body is not turned, judged by the depth difference between both sides.
+    wrist_limit =min (left_hip.y ,right_hip.y )-body_height *0.08
+    if left_wrist.y <wrist_limit or right_wrist.y <wrist_limit :
         return False
-    if abs (tmp21.x -b32.x )<tmp14 *0.3 :
+    if left_elbow.y <left_shoulder.y -body_height *0.02 or right_elbow.y <right_shoulder.y -body_height *0.02 :
         return False
-    if abs (shuju16.x -jieguo27.x )<tmp14 *0.4 :
+    if abs (left_shoulder.z -right_shoulder.z )>shoulder_width *0.45 :
         return False
-    if abs (linshi22.z -dongxi33.z )>a38 *0.45 :
-        return False
-    if abs (jieguo20.z -a31.z )>tmp14 *0.6 :
-        return False
-    return True
+    return abs (left_hip.z -right_hip.z )<=hip_width *0.6
 
 def _decode_image_bytes (image_bytes :bytes )->Any :
     import cv2 as b39
@@ -345,7 +350,7 @@ def _call_ollama_image_api (prompt :str )->bytes :
         raise AvatarImageGenerationError ('Ollama did not return a PNG image.')
     return tmp68
 
-def _generated_reference_is_usable (image_bytes :bytes )->bool :
+def _generated_reference_is_usable (image_bytes :bytes ,strict :bool =True )->bool :
     try :
         linshi57 =_decode_image_bytes (image_bytes )
         (a59 ,b60 )=linshi57.shape [:2 ]
@@ -356,7 +361,7 @@ def _generated_reference_is_usable (image_bytes :bytes )->bool :
         if len (dongxi61 )!=1 :
             logger.info ('Rejected generated reference because it contains %d poses',len (dongxi61 ))
             return False
-        return pose_is_front_full_body (dongxi61 [0 ])
+        return pose_is_front_full_body (dongxi61 [0 ],strict )
     except Exception as shuju58 :
         logger.info ('Generated reference validation failed: %s',shuju58 )
         return False
@@ -638,6 +643,83 @@ def bake_front_projection_texture (source_glb_path :Path ,reference_image_path :
     _write_glb (output_glb_path ,linshi169 ,bytes (jieguo167 ))
     return output_glb_path
 
+def photo_model_filename (name :str ,photo_png :bytes )->str :
+    """Cache key for a photo avatar: same name, same photo, same settings, same file."""
+    clean_name =normalize_name (name )
+    slug =unicodedata.normalize ('NFKD',clean_name ).encode ('ascii','ignore').decode ('ascii')
+    slug =re.sub ('[^a-zA-Z0-9]+','-',slug ).strip ('-').lower ()[:48 ]or 'avatar'
+    settings =':'.join ((PIPELINE_VERSION ,'photo','local-sd',str (LOCAL_PHOTO_STRENGTH ),str (MARCHING_CUBES_RESOLUTION ),clean_name.casefold ()))
+    digest =hashlib.sha256 (settings.encode ('utf-8')+b':'+photo_png ).hexdigest ()[:10 ]
+    return f'{slug}-{PIPELINE_VERSION}-photo-{digest}.glb'
+
+def prepare_uploaded_photo (photo :bytes )->bytes :
+    """Validate an uploaded photo and return it as PNG bytes."""
+    if not photo :
+        raise AvatarImageGenerationError ('Choose a PNG, JPG or WebP image first.')
+    if len (photo )>UPLOAD_LIMIT_BYTES :
+        raise AvatarImageGenerationError (f'The image is larger than {UPLOAD_LIMIT_BYTES //(1024 *1024 )} MB.')
+    is_png =photo.startswith (b'\x89PNG\r\n\x1a\n')
+    is_jpeg =photo.startswith (b'\xff\xd8\xff')
+    is_webp =photo.startswith (b'RIFF')and photo [8 :12 ]==b'WEBP'
+    if not (is_png or is_jpeg or is_webp ):
+        raise AvatarImageGenerationError ('The file must be a PNG, JPG or WebP image.')
+    try :
+        decoded =_decode_image_bytes (photo )
+    except Exception as error :
+        raise AvatarImageGenerationError ('The image could not be read.')from error
+    height ,width =decoded.shape [:2 ]
+    if min (height ,width )<256 :
+        raise AvatarImageGenerationError ('The image is too small. Use at least 256 pixels on each side.')
+    if height *width >16_000_000 :
+        raise AvatarImageGenerationError ('The image has too many pixels. Use 16 megapixels or less.')
+    if height <width *1.05 :
+        raise AvatarImageGenerationError ('Use a portrait image that shows the whole person.')
+    poses =_detect_pose_landmarks (decoded )
+    if len (poses )!=1 or not pose_is_front_full_body (poses [0 ]):
+        raise AvatarImageGenerationError ('Use a photo of one person facing the camera, head to shoes, arms hanging down, hands and feet visible.')
+    import cv2
+    encoded ,png =cv2.imencode ('.png',decoded )
+    if not encoded :
+        raise AvatarImageGenerationError ('The image could not be converted to PNG.')
+    return png.tobytes ()
+
+def build_photo_cartoon_prompt (name :str )->str :
+    return (f'3D cartoon version of the same person in the input image, {name}, keep the same face, hair, clothes '
+            'and body shape, one full body, front view, neutral A pose, both arms down, hands and shoes visible, '
+            'clean detailed face, plain light gray background')
+
+def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )->Path :
+    """Turn the photo into a cartoon reference, retrying until the pose check passes."""
+    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
+        raise ValueError ('output_filename must be a plain .png filename')
+    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
+    photo_path =MODEL_DIR /f'.photo-{uuid4().hex}.png'
+    photo_path.write_bytes (photo_png )
+    base_seed =int (hashlib.sha256 (photo_png ).hexdigest ()[:8 ],16 )
+    last_error :Exception |None =None
+    try :
+        for attempt in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
+            candidate =MODEL_DIR /f'.photo-cartoon-{uuid4().hex}.png'
+            try :
+                logger.info ('Turning uploaded photo into a cartoon (%d/%d)',attempt ,LOCAL_IMAGE_ATTEMPTS )
+                run_photo_cartoon (photo_path ,candidate ,build_photo_cartoon_prompt (name ),models_dir =LOCAL_MODELS_DIR ,device =LOCAL_IMAGE_DEVICE ,strength =LOCAL_PHOTO_STRENGTH ,seed =base_seed +attempt )
+                if _generated_reference_is_usable (candidate.read_bytes (),strict =False ):
+                    final_path =MODEL_DIR /output_filename
+                    candidate.replace (final_path )
+                    return final_path
+                last_error =AvatarImageGenerationError ('The cartoon lost the front full-body pose. Try a photo with a plainer background.')
+            except ResultFlagged :
+                logger.info ('Safety checker rejected cartoon attempt %d, trying another seed',attempt )
+                last_error =AvatarImageGenerationError ('The image model kept flagging the cartoon. Try another photo.')
+            except LocalWorkerError as error :
+                # Missing models or memory problems will not fix themselves on a retry.
+                raise AvatarImageGenerationError (str (error ))from error
+            finally :
+                candidate.unlink (missing_ok =True )
+        raise AvatarImageGenerationError (str (last_error ))
+    finally :
+        photo_path.unlink (missing_ok =True )
+
 def generate_3d_local (reference_image_path :Path ,output_filename :str )->Path :
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.glb'):
         raise ValueError ('output_filename must be a plain .glb filename')
@@ -806,6 +888,35 @@ def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length
     for tmpx in range (1 ):
         tmpmeiyong +=tmpx
     return _create_avatar (request ,name ,force ,provider )
+
+@app.post ('/api/avatar-from-image',response_model =AvatarResponse )
+async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ))->AvatarResponse :
+    clean_name =_valid_name (name )
+    image_model ='Stable Diffusion 1.5 img2img'
+    try :
+        upload =await image.read (UPLOAD_LIMIT_BYTES +1 )
+    finally :
+        await image.close ()
+    try :
+        photo_png =prepare_uploaded_photo (upload )
+    except AvatarImageGenerationError as error :
+        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo',image_model =image_model )
+    filename =photo_model_filename (clean_name ,photo_png )
+    model_path =MODEL_DIR /filename
+    reference_path =MODEL_DIR /reference_image_filename (filename )
+    with _generation_lock (filename ):
+        cached =not force and model_path.is_file ()and model_path.stat ().st_size >0 and reference_path.is_file ()
+        if cached :
+            logger.info ('Serving cached photo avatar for %s',clean_name )
+        else :
+            try :
+                generate_photo_cartoon (clean_name ,photo_png ,reference_path.name )
+                generate_3d_local (reference_path ,filename )
+            except (AvatarImageGenerationError ,AvatarGenerationError )as error :
+                logger.exception ('Photo avatar failed for %s',clean_name )
+                return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo',image_model =image_model )
+    response =successful_response (request ,clean_name ,filename ,cached ,'photo')
+    return response.model_copy (update ={'image_model':image_model })
 
 @app.get ('/api/compare',response_model =CompareResponse )
 def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ))->CompareResponse :

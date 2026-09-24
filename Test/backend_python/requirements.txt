@@ -2,6 +2,7 @@ fastapi==0.139.2
 uvicorn[standard]==0.51.0
 mediapipe==0.10.21
 certifi==2026.7.22
+python-multipart==0.0.20
 # mediapipe 0.10.21 needs numpy 1.x; newer rembg releases need numpy 2.
 numpy<2
 rembg==2.0.65
@@ -14,3 +15,6 @@ einops>=0.7,<1
 trimesh>=4,<5
 scikit-image>=0.22,<1
 imageio>=2.34,<3
+diffusers>=0.31,<1
+accelerate>=0.31,<2
+safetensors>=0.4,<1
