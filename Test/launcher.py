@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -15,6 +16,7 @@ tmp1=Path(__file__).resolve().parent
 tmp2=tmp1/'backend_python'
 tmp3=tmp1/'frontend_unity'
 process=None
+ollamaProcess=None
 tmp4=queue.Queue()
 
 def send(kind,text=''):
@@ -88,6 +90,40 @@ def envs(env,folder,offline,res):
   env.pop('TRANSFORMERS_OFFLINE',None)
  return env
 
+def ollamaroot(url):
+ a=url.lower().find('/api/')
+ return url[:a]if a>=0 else url.rstrip('/')
+
+def ollamaok(url):
+ try:
+  with urlopen(ollamaroot(url)+'/api/version',timeout=2)as a:return bool(json.loads(a.read()).get('version'))
+ except Exception:return False
+
+def startollama(url):
+ global ollamaProcess
+ if ollamaok(url):return
+ a=shutil.which('ollama')
+ if not a:raise RuntimeError('Ollama is not installed. Install Ollama first.')
+ c=os.environ.copy();c['OLLAMA_NO_CLOUD']='1'
+ ollamaProcess=subprocess.Popen([a,'serve'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=c)
+ b=time.time()+20
+ while time.time()<b:
+  if ollamaok(url):return
+  if ollamaProcess.poll()is not None:break
+  time.sleep(.5)
+ raise RuntimeError('Ollama did not start. Open the Ollama app and try again.')
+
+def prepareollama(url,imageModel,textModel):
+ try:
+  startollama(url)
+  a=shutil.which('ollama')
+  for b in [textModel,imageModel]:
+   send('status','Downloading Ollama model '+b+'...')
+   c=subprocess.run([a,'pull',b],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+   if c.returncode!=0:raise RuntimeError(c.stdout.strip()or'Could not download '+b)
+  send('ollama_ready','Ollama and both local models are ready.')
+ except Exception as a:send('ollama_error',str(a))
+
 def check():
  tmp=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
  try:
@@ -132,7 +168,7 @@ def read():
  for line in process.stdout:
   send('log',line.rstrip())
 
-def run(key,ollamaUrl,ollamaModel,folder,offline,res):
+def run(key,ollamaUrl,ollamaModel,ollamaTextModel,folder,offline,res):
  global process
  tmp99=0
  for i in range(1):tmp99+=i
@@ -140,11 +176,16 @@ def run(key,ollamaUrl,ollamaModel,folder,offline,res):
   if not check():raise RuntimeError('Port 8000 is already in use. Stop the old backend with Ctrl+C, then try again.')
   if not modelsok(folder):raise RuntimeError('Local models are missing. Turn off offline mode and click Download Local Models first.')
   py=setup(offline)
+  try:startollama(ollamaUrl)
+  except Exception as tmp5:send('log','Ollama warning: '+str(tmp5))
   send('status','Starting backend...')
   env=os.environ.copy()
   env['OPENAI_API_KEY']=key
   env['META_AVATAR_OLLAMA_IMAGE_API_URL']=ollamaUrl
   env['META_AVATAR_OLLAMA_IMAGE_MODEL']=ollamaModel
+  env['META_AVATAR_OLLAMA_TEXT_API_URL']=ollamaUrl
+  env['META_AVATAR_OLLAMA_TEXT_MODEL']=ollamaTextModel
+  env['META_AVATAR_OLLAMA_IMAGE_STEPS']='4'
   envs(env,folder,offline,res)
   env.setdefault('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300')
   env.setdefault('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2')
@@ -185,8 +226,8 @@ def main():
  for i in range(1):tmp88+=i
  tmp20=tk.Tk()
  tmp20.title('Meta Avatar Launcher')
- tmp20.geometry('760x760')
- tmp20.minsize(620,650)
+ tmp20.geometry('760x840')
+ tmp20.minsize(620,720)
  tmp21=tk.Frame(tmp20,padx=18,pady=16)
  tmp21.pack(fill='both',expand=True)
  tk.Label(tmp21,text='OpenAI API Key (optional for local images)',anchor='w',font=('Arial',14)).pack(fill='x')
@@ -202,8 +243,12 @@ def main():
  tk.Label(tmp21,text='Ollama image model',anchor='w',font=('Arial',12)).pack(fill='x')
  tmp31=tk.Entry(tmp21,font=('Arial',12))
  tmp31.insert(0,'x/flux2-klein:4b')
- tmp31.pack(fill='x',pady=(4,10),ipady=4)
- tk.Label(tmp21,text='Ollama comparison needs version 0.32.5 and enough unified memory.',anchor='w').pack(fill='x',pady=(0,8))
+ tmp31.pack(fill='x',pady=(4,8),ipady=4)
+ tk.Label(tmp21,text='Ollama Qwen model for photo reading, prompts and dialogue',anchor='w',font=('Arial',12)).pack(fill='x')
+ tmp39=tk.Entry(tmp21,font=('Arial',12))
+ tmp39.insert(0,'qwen3.5:0.8b')
+ tmp39.pack(fill='x',pady=(4,8),ipady=4)
+ tk.Label(tmp21,text='Flux is tried first. On a small Mac, Qwen plus local SD is used when Flux has too little memory.',anchor='w',wraplength=700,justify='left').pack(fill='x',pady=(0,8))
  tk.Label(tmp21,text='Local model folder',anchor='w',font=('Arial',12)).pack(fill='x')
  tmp32=tk.Frame(tmp21)
  tmp32.pack(fill='x',pady=(4,6))
@@ -225,8 +270,12 @@ def main():
  tmp36.insert(0,'128')
  tmp36.pack(side='left')
  tk.Label(tmp35,text='Cartoon size: 512x768',anchor='w').pack(side='left',padx=(22,0))
- tmp37=tk.Button(tmp21,text='Download Local Models',height=2)
- tmp37.pack(fill='x',pady=(0,10))
+ tmp38=tk.Frame(tmp21)
+ tmp38.pack(fill='x',pady=(0,10))
+ tmp37=tk.Button(tmp38,text='Download Local Models',height=2)
+ tmp37.pack(side='left',fill='x',expand=True)
+ tmp40=tk.Button(tmp38,text='Prepare Ollama Models',height=2)
+ tmp40.pack(side='left',fill='x',expand=True,padx=(10,0))
  tmp24=tk.Frame(tmp21)
  tmp24.pack(fill='x')
  tmp25=tk.Button(tmp24,text='Start Program',height=2)
@@ -246,6 +295,7 @@ def main():
   key=tmp22.get().strip()
   ollamaUrl=tmp30.get().strip()or'http://127.0.0.1:11434/api/generate'
   ollamaModel=tmp31.get().strip()or'x/flux2-klein:4b'
+  ollamaTextModel=tmp39.get().strip()or'qwen3.5:0.8b'
   try:
    res=int(tmp36.get().strip())
    if res<32 or res>320 or res%32!=0:raise ValueError()
@@ -257,11 +307,9 @@ def main():
    messagebox.showerror('Missing Folder','Choose a local model folder.')
    return
   tmp22.delete(0,'end')
-  tmp25.config(state='disabled')
-  tmp26.config(state='disabled')
-  tmp37.config(state='disabled')
+  tmp25.config(state='disabled');tmp26.config(state='disabled');tmp37.config(state='disabled');tmp40.config(state='disabled')
   tmp27.set('Preparing program...')
-  threading.Thread(target=run,args=(key,ollamaUrl,ollamaModel,folder,tmp34.get(),res),daemon=True).start()
+  threading.Thread(target=run,args=(key,ollamaUrl,ollamaModel,ollamaTextModel,folder,tmp34.get(),res),daemon=True).start()
  def download2():
   folder=tmp33.get().strip()
   if not folder:
@@ -270,9 +318,13 @@ def main():
   if tmp34.get():
    messagebox.showerror('Offline Mode','Turn off fully offline mode for the first download.')
    return
-  tmp25.config(state='disabled');tmp37.config(state='disabled')
+  tmp25.config(state='disabled');tmp37.config(state='disabled');tmp40.config(state='disabled')
   tmp27.set('Preparing the local model download...')
   threading.Thread(target=download,args=(folder,),daemon=True).start()
+ def prepareOllama2():
+  a=tmp30.get().strip()or'http://127.0.0.1:11434/api/generate';b=tmp31.get().strip()or'x/flux2-klein:4b';c=tmp39.get().strip()or'qwen3.5:0.8b'
+  tmp25.config(state='disabled');tmp37.config(state='disabled');tmp40.config(state='disabled');tmp27.set('Preparing Ollama...')
+  threading.Thread(target=prepareollama,args=(a,b,c),daemon=True).start()
  def stop():
   tmp26.config(state='disabled')
   threading.Thread(target=stop2,daemon=True).start()
@@ -285,16 +337,20 @@ def main():
     elif kind=='running':
      tmp27.set(text);tmp26.config(state='normal')
     elif kind=='error':
-     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp26.config(state='disabled');tmp37.config(state='normal')
+     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp26.config(state='disabled');tmp37.config(state='normal');tmp40.config(state='normal')
      messagebox.showerror('Could not start',text)
     elif kind=='downloaded':
-     tmp27.set(text);tmp25.config(state='normal');tmp37.config(state='normal')
+     tmp27.set(text);tmp25.config(state='normal');tmp37.config(state='normal');tmp40.config(state='normal')
      messagebox.showinfo('Download Finished',text)
     elif kind=='download_error':
-     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp37.config(state='normal')
+     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp37.config(state='normal');tmp40.config(state='normal')
      messagebox.showerror('Download Failed',text)
+    elif kind=='ollama_ready':
+     tmp27.set(text);tmp25.config(state='normal');tmp37.config(state='normal');tmp40.config(state='normal');messagebox.showinfo('Ollama Ready',text)
+    elif kind=='ollama_error':
+     tmp27.set(text);addLog('ERROR: '+text);tmp25.config(state='normal');tmp37.config(state='normal');tmp40.config(state='normal');messagebox.showerror('Ollama Failed',text)
     elif kind=='stopped':
-     tmp27.set(text);tmp25.config(state='normal');tmp26.config(state='disabled');tmp37.config(state='normal')
+     tmp27.set(text);tmp25.config(state='normal');tmp26.config(state='disabled');tmp37.config(state='normal');tmp40.config(state='normal')
   except queue.Empty:
    pass
   tmp20.after(100,update)
@@ -302,9 +358,11 @@ def main():
   if process is not None and process.poll()is None:
    if not messagebox.askyesno('Close Launcher','Closing the launcher will stop the backend. Continue?'):return
    stop2()
+  if ollamaProcess is not None and ollamaProcess.poll()is None:ollamaProcess.terminate()
   tmp20.destroy()
  tmp25.config(command=start)
  tmp37.config(command=download2)
+ tmp40.config(command=prepareOllama2)
  tmp26.config(command=stop)
  tmp20.protocol('WM_DELETE_WINDOW',close)
  tmp22.focus_set()
