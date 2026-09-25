@@ -83,45 +83,72 @@ public class AvatarDataFetcher:MonoBehaviour{
  int tmp51;
  void Start(){
   int tmp99=0;for(int j=0;j<1;j++){tmp99+=j;}
+  // Layout: generation controls in a list on the left, scene controls on the right,
+  // status line at the bottom centre, so the middle of the screen stays free for the avatar.
+  float y=-Margin;
+  if(nameInput!=null){
+   if(nameInput.placeholder is TMP_Text tmp25)tmp25.text="Name, or MP names with commas...";
+   pin(nameInput.GetComponent<RectTransform>(),false,y,LeftWidth,RowHeight);
+   // A second copy of the name field holds the photo path, so it looks the same.
+   photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
+   if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Full-body photo path...";
+  }
+  y-=RowHeight+RowGap;
   Button tmp24=FindAnyObjectByType<Button>();
   if(tmp24!=null){
    TextMeshProUGUI gptLabel=tmp24.GetComponentInChildren<TextMeshProUGUI>();
-   if(gptLabel!=null){gptLabel.text="GPT Name 3D";gptLabel.fontSize=17;}
-   makeButton(tmp24,"CompareButton","GPT / Ollama",new Vector2(460,-20),new Vector2(150,44),Compare);
-   makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",new Vector2(620,-20),new Vector2(150,44),OllamaName);
-   makeButton(tmp24,"BatchButton","German MPs",new Vector2(780,-20),new Vector2(150,44),Batch);
-   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(360,-74),new Vector2(80,44),BrowsePhoto);
-   makeButton(tmp24,"PhotoButton","Local Photo 3D",new Vector2(450,-74),new Vector2(150,44),()=>PhotoTo3D("local"));
-   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",new Vector2(610,-74),new Vector2(160,44),()=>PhotoTo3D("ollama"));
-   makeButton(tmp24,"PhotoCompareButton","Photo Compare",new Vector2(780,-74),new Vector2(150,44),PhotoCompare);
-   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(110,38),()=>scene(0));
-   makeButton(tmp24,"ParliamentButton","Parliament",new Vector2(140,-128),new Vector2(170,38),()=>scene(1));
-   makeButton(tmp24,"PressButton","Press Room",new Vector2(320,-128),new Vector2(140,38),()=>scene(2));
-   makeButton(tmp24,"ElectionButton","Election",new Vector2(470,-128),new Vector2(150,38),()=>scene(3));
-   makeButton(tmp24,"WalkButton","Walk",new Vector2(630,-128),new Vector2(140,38),walk);
-   makeButton(tmp24,"DialogueButton","Dialogue",new Vector2(780,-128),new Vector2(150,38),ToggleDialogue);
+   if(gptLabel!=null){gptLabel.text="GPT Name 3D";gptLabel.fontSize=ButtonFontSize;}
+   pin(tmp24.GetComponent<RectTransform>(),false,y,LeftWidth,RowHeight);y-=RowHeight+RowGap;
+   makeButton(tmp24,"CompareButton","GPT / Ollama",false,ref y,Compare);
+   makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",false,ref y,OllamaName);
+   makeButton(tmp24,"BatchButton","German MPs",false,ref y,Batch);
+   y-=SectionGap;
+   if(photoPathInput!=null){pin(photoPathInput.GetComponent<RectTransform>(),false,y,LeftWidth,RowHeight);y-=RowHeight+RowGap;}
+   makeButton(tmp24,"BrowsePhotoButton","Browse Photo...",false,ref y,BrowsePhoto);
+   makeButton(tmp24,"PhotoButton","Local Photo 3D",false,ref y,()=>PhotoTo3D("local"));
+   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",false,ref y,()=>PhotoTo3D("ollama"));
+   makeButton(tmp24,"PhotoCompareButton","Photo Compare",false,ref y,PhotoCompare);
+   float r=-Margin;
+   makeButton(tmp24,"PlainButton","Plain",true,ref r,()=>scene(0));
+   makeButton(tmp24,"ParliamentButton","Parliament",true,ref r,()=>scene(1));
+   makeButton(tmp24,"PressButton","Press Room",true,ref r,()=>scene(2));
+   makeButton(tmp24,"ElectionButton","Election",true,ref r,()=>scene(3));
+   r-=SectionGap;
+   makeButton(tmp24,"WalkButton","Walk",true,ref r,walk);
+   makeButton(tmp24,"DialogueButton","Dialogue",true,ref r,ToggleDialogue);
   }
-  if(nameInput!=null&&nameInput.placeholder is TMP_Text tmp25)tmp25.text="One name, or MP names separated by commas...";
-  if(nameInput!=null){
-   // A second copy of the name field holds the photo path, so it looks the same.
-   photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
-   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(330,44);
-   if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Front full-body photo (PNG, JPG or WebP)...";
+  if(statusText!=null){
+   RectTransform tmp37=statusText.GetComponent<RectTransform>();
+   tmp37.anchorMin=new Vector2(0,0);tmp37.anchorMax=new Vector2(1,0);tmp37.pivot=new Vector2(.5f,0);
+   tmp37.offsetMin=new Vector2(Margin*2+LeftWidth,Margin);tmp37.offsetMax=new Vector2(-(Margin*2+RightWidth),Margin+StatusHeight);
+   statusText.fontSize=14;statusText.alignment=TextAlignmentOptions.BottomLeft;statusText.overflowMode=TextOverflowModes.Ellipsis;
   }
-  if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-178);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
   scene(0);
  }
- void makeButton(Button tmp24,string tmp25,string tmp26,Vector2 tmp27,Vector2 tmp28,UnityEngine.Events.UnityAction tmp29){
+ const float Margin=10,LeftWidth=165,RightWidth=120,RowHeight=32,RowGap=6,SectionGap=14,StatusHeight=64,ButtonFontSize=14;
+ // Pins a control to the top-left (left list) or top-right (right list) corner of the canvas.
+ void pin(RectTransform rect,bool right,float y,float width,float height){
+  float x=right?1:0;
+  rect.anchorMin=new Vector2(x,1);rect.anchorMax=new Vector2(x,1);rect.pivot=new Vector2(x,1);
+  rect.anchoredPosition=new Vector2(right?-Margin:Margin,y);rect.sizeDelta=new Vector2(width,height);
+ }
+ // The screen area between the two button lists, in IMGUI pixels, for panels and speech bubbles.
+ Rect middleArea(){
+  float scale=statusText!=null&&statusText.canvas!=null?statusText.canvas.scaleFactor:1;
+  float left=(Margin*2+LeftWidth)*scale,right=(Margin*2+RightWidth)*scale;
+  return new Rect(left,Margin*scale,Mathf.Max(200,Screen.width-left-right),Screen.height-Margin*2*scale);
+ }
+ void makeButton(Button tmp24,string tmp25,string tmp26,bool right,ref float y,UnityEngine.Events.UnityAction tmp29){
   GameObject tmp30=new GameObject(tmp25,typeof(RectTransform),typeof(CanvasRenderer),typeof(Image),typeof(Button));
   tmp30.transform.SetParent(tmp24.transform.parent,false);
   RectTransform tmp31=tmp30.GetComponent<RectTransform>();
-  tmp31.anchorMin=new Vector2(0,1);tmp31.anchorMax=new Vector2(0,1);tmp31.pivot=new Vector2(0,1);tmp31.anchoredPosition=tmp27;tmp31.sizeDelta=tmp28;
+  pin(tmp31,right,y,right?RightWidth:LeftWidth,RowHeight);y-=RowHeight+RowGap;
   Image tmp32=tmp30.GetComponent<Image>();tmp32.sprite=tmp24.GetComponent<Image>().sprite;tmp32.type=Image.Type.Sliced;
   Button tmp33=tmp30.GetComponent<Button>();tmp33.targetGraphic=tmp32;tmp33.onClick.AddListener(tmp29);
   GameObject tmp34=new GameObject("Text (TMP)",typeof(RectTransform),typeof(CanvasRenderer),typeof(TextMeshProUGUI));
   tmp34.transform.SetParent(tmp30.transform,false);
   RectTransform tmp35=tmp34.GetComponent<RectTransform>();tmp35.anchorMin=Vector2.zero;tmp35.anchorMax=Vector2.one;tmp35.sizeDelta=Vector2.zero;
-  TextMeshProUGUI tmp36=tmp34.GetComponent<TextMeshProUGUI>();tmp36.text=tmp26;tmp36.fontSize=17;tmp36.alignment=TextAlignmentOptions.Center;tmp36.color=new Color(.2f,.2f,.2f,1);
+  TextMeshProUGUI tmp36=tmp34.GetComponent<TextMeshProUGUI>();tmp36.text=tmp26;tmp36.fontSize=ButtonFontSize;tmp36.alignment=TextAlignmentOptions.Center;tmp36.color=new Color(.2f,.2f,.2f,1);
   if(statusText!=null)tmp36.font=statusText.font;
  }
  public void Generate(){
@@ -349,14 +376,15 @@ public class AvatarDataFetcher:MonoBehaviour{
  }
  void dialogueGui(){
   if(tmp1==null||tmp20==null)return;
+  Rect middle=middleArea();
   if(bubblesVisible){
-   float width=Mathf.Min(330,Screen.width*.5f-45);
-   speechBubble(new Rect(20,240,width,95),leftLine,true);
-   speechBubble(new Rect(Screen.width*.5f+25,240,width,95),rightLine,false);
+   float width=Mathf.Min(330,middle.width*.5f-25);
+   speechBubble(new Rect(middle.x,middle.y+20,width,95),leftLine,true);
+   speechBubble(new Rect(middle.xMax-width,middle.y+20,width,95),rightLine,false);
   }
   if(!dialoguePanelOpen)return;
-  float panelWidth=Mathf.Min(580,Screen.width-30);
-  Rect panel=new Rect((Screen.width-panelWidth)*.5f,Screen.height-315,panelWidth,300);
+  float panelWidth=Mathf.Min(580,middle.width);
+  Rect panel=new Rect(middle.center.x-panelWidth*.5f,Screen.height-315,panelWidth,300);
   GUI.Box(panel,"");
   GUILayout.BeginArea(new Rect(panel.x+14,panel.y+12,panel.width-28,panel.height-24));
   GUILayout.Label("Speech bubbles for the two avatars");
@@ -377,7 +405,8 @@ public class AvatarDataFetcher:MonoBehaviour{
   dialogueGui();
   if(tmp49&&GUI.Button(new Rect(Screen.width-170,Screen.height-54,155,40),"Stop MP Batch")){tmp50=true;update("Stopping after the current MP finishes...");}
   if(!tmp41)return;
-  float tmp5=Mathf.Min(560,Screen.width-30);float tmp6=Mathf.Max(300,Screen.height-150);Rect tmp7=new Rect(15,110,tmp5,tmp6);
+  Rect middle=middleArea();
+  float tmp5=Mathf.Min(560,middle.width);float tmp6=Mathf.Max(300,Screen.height-60);Rect tmp7=new Rect(middle.center.x-tmp5*.5f,15,tmp5,tmp6-30);
   GUI.Box(tmp7,"");GUILayout.BeginArea(new Rect(tmp7.x+12,tmp7.y+10,tmp7.width-24,tmp7.height-20));
   GUILayout.Label(tmp42?"Loading German MPs...":$"German Bundestag period {tmp48}: {tmp43.Length} names");
   GUILayout.BeginHorizontal();GUILayout.Label("Search",GUILayout.Width(52));tmp46=GUILayout.TextField(tmp46);GUILayout.EndHorizontal();
