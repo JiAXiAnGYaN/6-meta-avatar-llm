@@ -110,6 +110,20 @@ class CompareResponse (BaseModel ):
     openai :AvatarResponse
     ollama :AvatarResponse
 
+class PhotoCompareResponse (BaseModel ):
+    name :str
+    status :str
+    message :str
+    left :AvatarResponse
+    right :AvatarResponse
+
+class DialogueResponse (BaseModel ):
+    status :Literal ['success','error']
+    message :str
+    left :str =''
+    right :str =''
+    model :str =''
+
 class BatchInput (BaseModel ):
     names :list [str ]=[]
     provider :str ='openai'
@@ -1024,23 +1038,15 @@ def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length
         tmpmeiyong +=tmpx
     return _create_avatar (request ,name ,force ,provider )
 
-@app.post ('/api/avatar-from-image',response_model =AvatarResponse )
-async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ),provider :str =Form (default ='local'))->AvatarResponse :
-    clean_name =_valid_name (name )
-    provider =provider.strip ().lower ()
-    if provider not in {'local','ollama'}:
-        await image.close ()
-        raise HTTPException (status_code =422 ,detail ='provider must be local or ollama')
-    label ='photo-ollama'if provider =='ollama'else 'photo'
-    image_model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if provider =='ollama'else 'Stable Diffusion 1.5 img2img'
+async def _read_upload (image :UploadFile )->bytes :
     try :
-        upload =await image.read (UPLOAD_LIMIT_BYTES +1 )
+        return await image.read (UPLOAD_LIMIT_BYTES +1 )
     finally :
         await image.close ()
-    try :
-        photo_png =prepare_uploaded_photo (upload )
-    except AvatarImageGenerationError as error :
-        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider =label ,image_model =image_model )
+
+def _create_photo_avatar (request :Request ,clean_name :str ,photo_png :bytes ,provider :str ,force :bool )->AvatarResponse :
+    label ='photo-ollama'if provider =='ollama'else 'photo'
+    image_model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if provider =='ollama'else 'Stable Diffusion 1.5 img2img'
     filename =photo_model_filename (clean_name ,photo_png ,provider )
     model_path =MODEL_DIR /filename
     reference_path =MODEL_DIR /reference_image_filename (filename )
@@ -1048,7 +1054,7 @@ async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,m
     with _generation_lock (filename ):
         cached =not force and model_path.is_file ()and model_path.stat ().st_size >0 and reference_path.is_file ()
         if cached :
-            logger.info ('Serving cached photo avatar for %s',clean_name )
+            logger.info ('Serving cached %s avatar for %s',label ,clean_name )
         else :
             try :
                 if provider =='ollama':
@@ -1057,10 +1063,68 @@ async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,m
                     generate_photo_cartoon (clean_name ,photo_png ,reference_path.name )
                 generate_3d_local (reference_path ,filename )
             except (AvatarImageGenerationError ,AvatarGenerationError )as error :
-                logger.exception ('Photo avatar failed for %s',clean_name )
+                logger.exception ('Photo avatar failed for %s with %s',clean_name ,provider )
                 return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider =label ,image_model =image_model )
     response =successful_response (request ,clean_name ,filename ,cached ,label )
     return response.model_copy (update ={'image_model':image_model ,'notice':notice })
+
+@app.post ('/api/avatar-from-image',response_model =AvatarResponse )
+async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ),provider :str =Form (default ='local'))->AvatarResponse :
+    clean_name =_valid_name (name )
+    provider =provider.strip ().lower ()
+    if provider not in {'local','ollama'}:
+        await image.close ()
+        raise HTTPException (status_code =422 ,detail ='provider must be local or ollama')
+    try :
+        photo_png =prepare_uploaded_photo (await _read_upload (image ))
+    except AvatarImageGenerationError as error :
+        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo')
+    return _create_photo_avatar (request ,clean_name ,photo_png ,provider ,force )
+
+@app.post ('/api/compare-photo',response_model =PhotoCompareResponse )
+async def compare_photo (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ))->PhotoCompareResponse :
+    """Same photo, two pipelines: local Stable Diffusion on the left, Qwen + Flux on the right.
+
+    The two run one after the other; Stable Diffusion and Flux together do
+    not fit in 16 GB next to Unity.
+    """
+    clean_name =_valid_name (name )
+    try :
+        photo_png =prepare_uploaded_photo (await _read_upload (image ))
+    except AvatarImageGenerationError as error :
+        failed =AvatarResponse (name =clean_name ,status ='error',message =str (error ))
+        return PhotoCompareResponse (name =clean_name ,status ='error',message =str (error ),left =failed ,right =failed )
+    left =_create_photo_avatar (request ,clean_name ,photo_png ,'local',force )
+    right =_create_photo_avatar (request ,clean_name ,photo_png ,'ollama',force )
+    both =left.status =='success'and right.status =='success'
+    return PhotoCompareResponse (name =clean_name ,status ='success'if both else 'error',message ='Both models are ready.'if both else 'One or both models failed. Check the two result messages.',left =left ,right =right )
+
+DIALOGUE_PROMPT ="""Two cartoon avatars stand side by side in a VR demo scene. The demo topic is: {topic}.
+Write one short, friendly first-person English line for each avatar, at most 140 characters each.
+They may welcome the audience, name the topic, say what the scene will be about, or mention their own cartoon look.
+They must not state any political opinion, claim, promise or quote, and must not speak as a real person.
+Return JSON: {{"left": "...", "right": "..."}}"""
+
+@app.get ('/api/dialogue',response_model =DialogueResponse )
+def dialogue (topic :str =Query (default ='German parliament and public policy',min_length =1 ,max_length =200 ))->DialogueResponse :
+    """Two speech bubble lines for the comparison view, written by the local Qwen.
+
+    The avatars look like real politicians, so the lines are kept to
+    welcoming the audience and naming the topic. Qwen is told never to
+    voice an opinion or quote anyone.
+    """
+    topic =' '.join (topic.split ())
+    try :
+        answer =json.loads (_call_ollama_text_api (DIALOGUE_PROMPT.format (topic =topic ),json_mode =True ))
+        left =' '.join (str (answer ['left']).split ())[:180 ]
+        right =' '.join (str (answer ['right']).split ())[:180 ]
+        if not left or not right :
+            raise ValueError ('empty line')
+    except (AvatarImageConfigurationError ,AvatarImageGenerationError )as error :
+        return DialogueResponse (status ='error',message =str (error ),model =OLLAMA_TEXT_MODEL )
+    except (KeyError ,TypeError ,ValueError ,json.JSONDecodeError ):
+        return DialogueResponse (status ='error',message ='Qwen did not return two lines. Try again.',model =OLLAMA_TEXT_MODEL )
+    return DialogueResponse (status ='success',message ='Dialogue ready.',left =left ,right =right ,model =OLLAMA_TEXT_MODEL )
 
 @app.get ('/api/compare',response_model =CompareResponse )
 def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ))->CompareResponse :

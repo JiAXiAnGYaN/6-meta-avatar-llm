@@ -28,6 +28,16 @@ public class CompareData{
  public string message;
  public Data openai;
  public Data ollama;
+ public Data left;
+ public Data right;
+}
+[Serializable]
+public class DialogueData{
+ public string status;
+ public string message;
+ public string left;
+ public string right;
+ public string model;
 }
 [Serializable]
 public class MembersData{
@@ -54,6 +64,11 @@ public class AvatarDataFetcher:MonoBehaviour{
  GameObject tmp40;
  bool walking;
  TMP_InputField photoPathInput;
+ bool dialoguePanelOpen;
+ bool bubblesVisible;
+ string leftLine="";
+ string rightLine="";
+ string dialogueTopic="German parliament and public policy";
  const long PhotoLimitBytes=15L*1024*1024;
  bool tmp41;
  bool tmp42;
@@ -75,20 +90,22 @@ public class AvatarDataFetcher:MonoBehaviour{
    makeButton(tmp24,"CompareButton","GPT / Ollama",new Vector2(460,-20),new Vector2(150,44),Compare);
    makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",new Vector2(620,-20),new Vector2(150,44),OllamaName);
    makeButton(tmp24,"BatchButton","German MPs",new Vector2(780,-20),new Vector2(150,44),Batch);
-   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(430,-74),new Vector2(90,44),BrowsePhoto);
-   makeButton(tmp24,"PhotoButton","Local Photo 3D",new Vector2(530,-74),new Vector2(190,44),()=>PhotoTo3D("local"));
-   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",new Vector2(730,-74),new Vector2(200,44),()=>PhotoTo3D("ollama"));
-   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(130,38),()=>scene(0));
-   makeButton(tmp24,"ParliamentButton","Parliament Speech",new Vector2(160,-128),new Vector2(190,38),()=>scene(1));
-   makeButton(tmp24,"PressButton","Press Room",new Vector2(360,-128),new Vector2(150,38),()=>scene(2));
-   makeButton(tmp24,"ElectionButton","Election Stage",new Vector2(520,-128),new Vector2(170,38),()=>scene(3));
-   makeButton(tmp24,"WalkButton","Walk",new Vector2(700,-128),new Vector2(110,38),walk);
+   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(360,-74),new Vector2(80,44),BrowsePhoto);
+   makeButton(tmp24,"PhotoButton","Local Photo 3D",new Vector2(450,-74),new Vector2(150,44),()=>PhotoTo3D("local"));
+   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",new Vector2(610,-74),new Vector2(160,44),()=>PhotoTo3D("ollama"));
+   makeButton(tmp24,"PhotoCompareButton","Photo Compare",new Vector2(780,-74),new Vector2(150,44),PhotoCompare);
+   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(110,38),()=>scene(0));
+   makeButton(tmp24,"ParliamentButton","Parliament",new Vector2(140,-128),new Vector2(170,38),()=>scene(1));
+   makeButton(tmp24,"PressButton","Press Room",new Vector2(320,-128),new Vector2(140,38),()=>scene(2));
+   makeButton(tmp24,"ElectionButton","Election",new Vector2(470,-128),new Vector2(150,38),()=>scene(3));
+   makeButton(tmp24,"WalkButton","Walk",new Vector2(630,-128),new Vector2(140,38),walk);
+   makeButton(tmp24,"DialogueButton","Dialogue",new Vector2(780,-128),new Vector2(150,38),ToggleDialogue);
   }
   if(nameInput!=null&&nameInput.placeholder is TMP_Text tmp25)tmp25.text="One name, or MP names separated by commas...";
   if(nameInput!=null){
    // A second copy of the name field holds the photo path, so it looks the same.
    photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
-   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(400,44);
+   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(330,44);
    if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Front full-body photo (PNG, JPG or WebP)...";
   }
   if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-178);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
@@ -153,32 +170,62 @@ public class AvatarDataFetcher:MonoBehaviour{
   update("Paste the full path of the photo into the photo field.");
 #endif
  }
- public void PhotoTo3D(string provider){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||photoPathInput==null||statusText==null){Debug.LogError("Photo UI is missing.");return;}
-  string name=nameInput.text.Trim();
-  string path=photoPathInput.text.Trim().Trim('"');
-  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for the person in the photo.");return;}
-  if(string.IsNullOrWhiteSpace(path)||!File.Exists(path)){update("Choose an existing photo first.");return;}
+ // Shared checks for every photo button; shows the reason and returns false when something is missing.
+ bool photoRequest(out string name,out string path,out string server){
+  name=path=server="";
+  if(tmp3){update("A model is already being generated. Please wait.");return false;}
+  if(nameInput==null||photoPathInput==null||statusText==null){Debug.LogError("Photo UI is missing.");return false;}
+  name=nameInput.text.Trim();
+  path=photoPathInput.text.Trim().Trim('"');
+  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for the person in the photo.");return false;}
+  if(string.IsNullOrWhiteSpace(path)||!File.Exists(path)){update("Choose an existing photo first.");return false;}
   string extension=Path.GetExtension(path).ToLowerInvariant();
-  if(extension!=".png"&&extension!=".jpg"&&extension!=".jpeg"&&extension!=".webp"){update("Choose a PNG, JPG or WebP photo.");return;}
-  if(new FileInfo(path).Length>PhotoLimitBytes){update("The photo must be 15 MB or smaller.");return;}
-  string server=root(backendUrl.TrimEnd('/'));
-  if(!good(server)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(createFromPhoto(name,path,server,provider));
+  if(extension!=".png"&&extension!=".jpg"&&extension!=".jpeg"&&extension!=".webp"){update("Choose a PNG, JPG or WebP photo.");return false;}
+  if(new FileInfo(path).Length>PhotoLimitBytes){update("The photo must be 15 MB or smaller.");return false;}
+  server=root(backendUrl.TrimEnd('/'));
+  if(!good(server)){update("Please configure a valid HTTP backend URL.");return false;}
+  return true;
+ }
+ List<IMultipartFormSection> photoForm(string name,string path,byte[] photo){
+  string extension=Path.GetExtension(path).ToLowerInvariant();
+  string mime=extension==".png"?"image/png":extension==".webp"?"image/webp":"image/jpeg";
+  return new List<IMultipartFormSection>{
+   new MultipartFormDataSection("name",name),
+   new MultipartFormFileSection("image",photo,Path.GetFileName(path),mime)
+  };
+ }
+ public void PhotoTo3D(string provider){
+  if(photoRequest(out string name,out string path,out string server))StartCoroutine(createFromPhoto(name,path,server,provider));
+ }
+ public void PhotoCompare(){
+  if(photoRequest(out string name,out string path,out string server))StartCoroutine(comparePhoto(name,path,server));
+ }
+ IEnumerator comparePhoto(string name,string path,string server){
+  tmp3=true;update("Same photo, two pipelines: Stable Diffusion first, then Qwen + Flux. This takes a few minutes...");
+  byte[] photo;
+  try{photo=File.ReadAllBytes(path);}
+  catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
+  using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/compare-photo",photoForm(name,path,photo))){
+   request.timeout=timeout;yield return request.SendWebRequest();
+   if(request.result!=UnityWebRequest.Result.Success){update($"Backend request failed (HTTP {request.responseCode}).");Debug.LogError(request.downloadHandler.text);tmp3=false;yield break;}
+   CompareData result;
+   try{result=JsonUtility.FromJson<CompareData>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid comparison response.");Debug.LogException(e);tmp3=false;yield break;}
+   if(result==null||result.status!="success"){
+    update("Local: "+(result?.left?.message??"failed")+" | Ollama: "+(result?.right?.message??"failed"));tmp3=false;yield break;
+   }
+   string notice=string.IsNullOrWhiteSpace(result.right.notice)?"":result.right.notice;
+   if(notice!="")Debug.LogWarning(notice);
+   update("Both 3D models are ready. Loading the split screen...");_=load2(result.left.model_url,result.right.model_url,result.left.image_model,result.right.image_model);
+  }
  }
  IEnumerator createFromPhoto(string name,string path,string server,string provider){
   tmp3=true;update(provider=="ollama"?"Qwen is reading the photo and Flux is redrawing it, then the 3D model is reconstructed...":"Turning the photo into a cartoon, then reconstructing the 3D model...");
   byte[] photo;
   try{photo=File.ReadAllBytes(path);}
   catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
-  string extension=Path.GetExtension(path).ToLowerInvariant();
-  string mime=extension==".png"?"image/png":extension==".webp"?"image/webp":"image/jpeg";
-  List<IMultipartFormSection> form=new List<IMultipartFormSection>{
-   new MultipartFormDataSection("name",name),
-   new MultipartFormDataSection("provider",provider),
-   new MultipartFormFileSection("image",photo,Path.GetFileName(path),mime)
-  };
+  List<IMultipartFormSection> form=photoForm(name,path,photo);
+  form.Add(new MultipartFormDataSection("provider",provider));
   using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/avatar-from-image",form)){
    request.timeout=timeout;yield return request.SendWebRequest();
    if(request.result!=UnityWebRequest.Result.Success){
@@ -270,7 +317,64 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp41=false;StartCoroutine(batch(tmp5,backendUrl.TrimEnd('/')));
  }
  void all(){tmp47=false;tmp41=false;StartCoroutine(batch(new List<string>(tmp43),backendUrl.TrimEnd('/')));}
+ public void ToggleDialogue(){
+  if(tmp1==null||tmp20==null){update("Load a comparison first; the bubbles belong to the two avatars.");return;}
+  dialoguePanelOpen=!dialoguePanelOpen;
+ }
+ IEnumerator writeDialogue(){
+  string server=root(backendUrl.TrimEnd('/'));
+  tmp3=true;update("Qwen is writing the two speech bubbles...");
+  using(UnityWebRequest request=UnityWebRequest.Get(server+"/api/dialogue?topic="+UnityWebRequest.EscapeURL(dialogueTopic))){
+   request.timeout=300;yield return request.SendWebRequest();
+   tmp3=false;
+   if(request.result!=UnityWebRequest.Result.Success){update($"Dialogue request failed (HTTP {request.responseCode}).");yield break;}
+   DialogueData result;
+   try{result=JsonUtility.FromJson<DialogueData>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid dialogue.");Debug.LogException(e);yield break;}
+   if(result==null||result.status!="success"){update(string.IsNullOrWhiteSpace(result?.message)?"Dialogue failed.":result.message);yield break;}
+   leftLine=result.left;rightLine=result.right;bubblesVisible=true;
+   update("Speech bubbles written by "+result.model+". You can still edit them in the Dialogue panel.");
+  }
+ }
+ void speechBubble(Rect box,string text,bool tailRight){
+  Color previous=GUI.color;GUI.color=new Color(1,1,1,.94f);
+  GUI.Box(box,"");
+  // Two small boxes under the bubble form the tail pointing at the avatar.
+  float tailX=tailRight?box.x+box.width*.68f:box.x+box.width*.32f;
+  GUI.Box(new Rect(tailX,box.y+box.height-5,22,22),"");GUI.Box(new Rect(tailX+7,box.y+box.height+17,13,13),"");
+  GUI.color=previous;
+  GUIStyle style=new GUIStyle(GUI.skin.label){alignment=TextAnchor.MiddleCenter,wordWrap=true,fontSize=16};
+  style.normal.textColor=Color.black;
+  GUI.Label(new Rect(box.x+12,box.y+10,box.width-24,box.height-20),string.IsNullOrWhiteSpace(text)?"...":text,style);
+ }
+ void dialogueGui(){
+  if(tmp1==null||tmp20==null)return;
+  if(bubblesVisible){
+   float width=Mathf.Min(330,Screen.width*.5f-45);
+   speechBubble(new Rect(20,240,width,95),leftLine,true);
+   speechBubble(new Rect(Screen.width*.5f+25,240,width,95),rightLine,false);
+  }
+  if(!dialoguePanelOpen)return;
+  float panelWidth=Mathf.Min(580,Screen.width-30);
+  Rect panel=new Rect((Screen.width-panelWidth)*.5f,Screen.height-315,panelWidth,300);
+  GUI.Box(panel,"");
+  GUILayout.BeginArea(new Rect(panel.x+14,panel.y+12,panel.width-28,panel.height-24));
+  GUILayout.Label("Speech bubbles for the two avatars");
+  GUILayout.Label("Topic for Qwen");
+  dialogueTopic=GUILayout.TextField(dialogueTopic,180);
+  GUI.enabled=!tmp3;
+  if(GUILayout.Button("Write with local Qwen"))StartCoroutine(writeDialogue());
+  GUI.enabled=true;
+  GUILayout.Label("Left avatar says");leftLine=GUILayout.TextArea(leftLine,180,GUILayout.Height(45));
+  GUILayout.Label("Right avatar says");rightLine=GUILayout.TextArea(rightLine,180,GUILayout.Height(45));
+  GUILayout.BeginHorizontal();
+  if(GUILayout.Button(bubblesVisible?"Hide bubbles":"Show bubbles"))bubblesVisible=!bubblesVisible;
+  if(GUILayout.Button("Close"))dialoguePanelOpen=false;
+  GUILayout.EndHorizontal();
+  GUILayout.EndArea();
+ }
  void OnGUI(){
+  dialogueGui();
   if(tmp49&&GUI.Button(new Rect(Screen.width-170,Screen.height-54,155,40),"Stop MP Batch")){tmp50=true;update("Stopping after the current MP finishes...");}
   if(!tmp41)return;
   float tmp5=Mathf.Min(560,Screen.width-30);float tmp6=Mathf.Max(300,Screen.height-150);Rect tmp7=new Rect(15,110,tmp5,tmp6);
@@ -341,6 +445,7 @@ public class AvatarDataFetcher:MonoBehaviour{
    if(!tmp14[0]||!tmp14[1]||tmp4){update2("One comparison model could not be added to the scene.");return;}
    clear();tmp1=tmp11;tmp2=tmp9;tmp20=tmp12;tmp21=tmp10;tmp11=null;tmp12=null;tmp9=null;tmp10=null;place(tmp1);place(tmp20);rig(tmp1);rig(tmp20);
    if(get(tmp1,out Bounds tmp15)&&get(tmp20,out Bounds tmp16))split(tmp15,tmp16);
+   leftLine="Hello! I was drawn by "+tmp7+".";rightLine="And I was drawn by "+tmp8+".";bubblesVisible=true;
    update2("Left: "+tmp7+" | Right: "+tmp8+". Drag or zoom inside either half.");
   }catch(Exception e){update2("Unexpected error while loading the comparison.");Debug.LogException(e);}
   finally{if(tmp11!=null)Destroy(tmp11);if(tmp12!=null)Destroy(tmp12);tmp9?.Dispose();tmp10?.Dispose();tmp3=false;}
@@ -381,6 +486,7 @@ public class AvatarDataFetcher:MonoBehaviour{
  void clear(){
   if(tmp1!=null){tmp1.SetActive(false);Destroy(tmp1);}if(tmp20!=null){tmp20.SetActive(false);Destroy(tmp20);}
   tmp2?.Dispose();tmp21?.Dispose();tmp1=null;tmp20=null;tmp2=null;tmp21=null;
+  dialoguePanelOpen=false;bubblesVisible=false;
   AvatarOrbitCamera tmp5=camera();Camera tmp6=tmp5==null?null:tmp5.GetComponent<Camera>();
   if(tmp6!=null){tmp6.rect=new Rect(0,0,1,1);if(tmp23>=0)tmp6.cullingMask=tmp23;tmp5.ownScreen=false;}
   if(tmp22!=null){Destroy(tmp22.gameObject);tmp22=null;}
