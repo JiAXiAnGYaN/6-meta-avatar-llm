@@ -1,326 +1,175 @@
-# Meta Avatar Test
+# Meta Avatar
 
-This is a small demo for making full-body 3D cartoon avatars of public politicians.
+A Unity and Python demo that turns a German member of parliament into a rigged, walking 3D cartoon avatar. The avatar can be made from a **name** or from a **front full-body photo**. Every 3D model is built locally with TripoSR, and Unity adds a skeleton at load time so body parts can be dragged and the avatar can walk.
 
-You can make one model, compare two AI image models, or generate German MPs in a batch. You can open the official MP list, search for people, choose a few names, or generate everybody. You can also put the avatar in a plain view, a parliament speech, a press room, or an election stage.
-
-## Full Process
+## Pipelines
 
 ```mermaid
 flowchart TD
-    A["Enter one name or a list of names"] --> B{"Choose a button"}
-    B -->|One model| C["GPT Image makes one full-body picture"]
-    B -->|Compare| D["GPT Image and Ollama work at the same time"]
-    B -->|MP list| E["Choose a few MPs or confirm Generate All"]
-    C --> F["Check the pose and build the 3D model"]
-    D --> G["Check both pictures and build two 3D models"]
-    E --> F
-    F --> H["Save each GLB file"]
-    G --> H
-    H --> I["Unity shows the model in the selected scene"]
+    N["Name"] -->|GPT Name 3D| G["GPT Image draws a full-body cartoon"]
+    N -->|Ollama Name 3D| F1["Flux draws a full-body cartoon"]
+    P["Front full-body photo"] --> V["Pose check: one person, facing the camera, head to shoes"]
+    V -->|Local Photo 3D| S["Stable Diffusion 1.5 redraws the photo"]
+    V -->|Ollama Photo 3D| Q["Qwen fills a JSON form: hair, glasses, clothing colours"]
+    Q --> F2["Flux redraws the photo with that description"]
+    F2 -. "Flux unavailable" .-> S
+    G --> T["Local TripoSR, marching cubes 256"]
+    F1 --> T
+    S --> T
+    F2 --> T
+    T --> B["Front texture baked into the GLB"]
+    B --> U["Unity loads the GLB, rigs it and lets it idle or walk"]
 ```
+
+| Button | Needs internet | Models |
+| --- | --- | --- |
+| GPT Name 3D | yes, and an OpenAI API key | gpt-image-2 |
+| Ollama Name 3D | no | Flux (x/flux2-klein:4b) |
+| Local Photo 3D | no | Stable Diffusion 1.5 img2img |
+| Ollama Photo 3D | no | Qwen (qwen3.5:4b) + Flux |
+| GPT / Ollama | yes, and an OpenAI API key | GPT Image and Flux side by side |
+| Photo Compare | no | Stable Diffusion and Qwen + Flux side by side |
+| Dialogue | no | Qwen writes the two speech bubbles |
+| German MPs | yes, for the list | official Bundestag open data |
+
+Flux does not know what real politicians look like, so **Ollama Name 3D** draws a generic person with the right clothes. For a likeness, use GPT or a photo.
+
+When a photo is redrawn with **Ollama Photo 3D** and Flux cannot run, local Stable Diffusion makes the cartoon instead and Unity shows a note saying so.
 
 ## What You Need
 
-- macOS or Windows 10/11
-- Python 3.10 or a compatible Python version
-- Unity `6000.5.4f1`
-- An internet connection
-- An OpenAI API key
-- Ollama `0.32.5`, a Mac with enough unified memory, and `x/flux2-klein:4b`, only for the comparison mode
-- Docker Desktop, only if you want to use the container or DUUI version
+- macOS on Apple Silicon (tested on an M1 Pro with 16 GB) or Windows 10/11
+- Python 3.10, 3.11 or 3.12
+- Unity `6000.5.4f1` (Unity Hub)
+- About 15 GB of free disk space: 5 GB for local models, 9 GB for the Ollama models, the rest for Python packages
+- **Ollama 0.32.5** for Flux. Ollama 0.32.6 and newer temporarily removed image generation ([ollama#17893](https://github.com/ollama/ollama/issues/17893)). Qwen still works on newer versions, but Flux then fails and the photo buttons fall back to Stable Diffusion. Do not update Ollama through Homebrew; get 0.32.5 from the [release page](https://github.com/ollama/ollama/releases/tag/v0.32.5).
+- An OpenAI API key only for the GPT buttons
 
-The image generation API can cost money. The first generation can also take several minutes. A cached model is much faster because it does not need to be generated again.
+## First Setup (once, online)
 
-The current backend uses `gpt-image-2` and `x/flux2-klein:4b` for cartoon pictures. It uses `stabilityai/TripoSR` for the 3D mesh.
+### With the launcher
 
-Ollama image generation is still experimental. Use Ollama `0.32.5`. Newer versions from `0.32.6` temporarily removed image generation, even when the downloaded model still says it can make images. The Ollama image model currently works on macOS. The normal GPT mode and the German MP batch mode can still run on Windows.
+macOS: double-click `Start.command`. Windows: `python launcher.py`.
 
-Before using comparison mode on macOS, install and start Ollama. Then run this once in Terminal:
+1. Click **1. Download Local Models**. This creates the Python environment, installs the packages and downloads TripoSR, u2net and Stable Diffusion 1.5 into `backend_python/local_models/`.
+2. Click **2. Prepare Ollama Models**. This starts Ollama and pulls `qwen3.5:4b` and `x/flux2-klein:4b`. It warns if the installed Ollama is too new for Flux.
+
+### By hand
 
 ```bash
+cd Test/backend_python
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python prepare_local_models.py
+ollama pull qwen3.5:4b
 ollama pull x/flux2-klein:4b
 ```
 
-## Quick Start With the GUI
+## Start
 
-This is the easiest way to run the complete program.
+### With the launcher
 
-First, close the `Test/frontend_unity` project if it is already open in Unity.
+1. Optionally paste the OpenAI API key. It is passed to the backend and not saved.
+2. Click **Start Program**. The launcher starts Ollama if it is not running, starts the backend and opens the Unity project (or tells you it is already open).
+3. In Unity, open `SampleScene` and press **Play**.
 
-### macOS
+Keep the launcher open while you work. **Stop Backend** or closing the window stops the backend.
 
-Open the `Test` folder and double-click `Start.command`. If macOS blocks it, right-click it and choose **Open**.
-
-You can also use this example path in Terminal. Replace `/path/to` with the place where you saved the project.
-
-```bash
-cd /path/to/meta_avatar_llm/Test
-./Start.command
-```
-
-### Windows
-
-Open PowerShell and use this example path. Replace `C:\path\to` with the place where you saved the project.
-
-```powershell
-cd C:\path\to\meta_avatar_llm\Test
-py launcher.py
-```
-
-If the `py` command is not available, try:
-
-```powershell
-python launcher.py
-```
-
-### After the Launcher Opens
-
-1. Enter your OpenAI API key.
-2. Keep the normal Ollama URL and model, or change them if your Ollama setup is different.
-3. Click **Start Program**.
-4. Wait until the backend is ready and Unity opens.
-5. In Unity, open `SampleScene` if it is not already open.
-6. Press the **Play** button at the top of the Unity window.
-7. Enter a real public politician's full name.
-8. Choose a generation button and a scene button.
-
-The buttons do this:
-
-- **Generate Full Body** makes one model with GPT Image.
-- **Compare GPT / Ollama** makes two versions at the same time. GPT is on the left and Ollama is on the right.
-- **Choose German MPs** opens the official Bundestag member list. Search for a name and tick a few people, or click **Select shown**. Then click **Generate selected**.
-- **Generate all** prepares every name in the official list. The program asks you to confirm because this can make hundreds of paid image requests and can run for many hours.
-- **Stop MP Batch** appears at the bottom-right while a batch is running. It stops after the current person finishes.
-
-The scene buttons are **Plain**, **Parliament Speech**, **Press Room**, and **Election Stage**. You can change the scene before or after loading a model. The scene changes without generating the avatar again.
-
-The batch button saves every successful GLB file in the backend model folder. It does not put hundreds of models into the Unity scene at the same time.
-
-When the model is ready:
-
-- Hold the left mouse button and drag to rotate it.
-- Use the mouse wheel to zoom in or out.
-- Press `F` to put the model back in the centre.
-
-The launcher does not save your API key. Keep the launcher open while using the Unity program. Click **Stop Backend** when you finish.
-
-## Manual Start
-
-Use this method if you want to see the backend logs directly.
-
-### macOS
+### By hand
 
 ```bash
-cd /path/to/meta_avatar_llm/Test/backend_python
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-export OPENAI_API_KEY='your-api-key'
-export META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
-export META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
-python main.py
+cd Test/backend_python
+export OPENAI_API_KEY='sk-...'          # only for the GPT buttons
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+.venv/bin/python main.py
 ```
 
-### Windows PowerShell
+The backend is ready when `Uvicorn running on http://127.0.0.1:8000` appears.
 
-```powershell
-cd C:\path\to\meta_avatar_llm\Test\backend_python
-py -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:OPENAI_API_KEY='your-api-key'
-$env:META_AVATAR_OLLAMA_IMAGE_API_URL='http://127.0.0.1:11434/api/generate'
-$env:META_AVATAR_OLLAMA_IMAGE_MODEL='x/flux2-klein:4b'
-.venv\Scripts\python.exe main.py
-```
+## Using the Unity Scene
 
-When you see this message, the backend is ready:
+| Row | Controls |
+| --- | --- |
+| 1 | name field, GPT Name 3D, GPT / Ollama, Ollama Name 3D, German MPs |
+| 2 | photo path, Browse, Local Photo 3D, Ollama Photo 3D, Photo Compare |
+| 3 | Plain, Parliament, Press Room, Election, Walk, Dialogue |
+| 4 | status line |
 
-```text
-Uvicorn running on http://127.0.0.1:8000
-```
+- Drag a **body part** (head, arm, leg) to turn it. It eases back when released.
+- Drag the **background** to orbit, scroll to zoom, press `F` to refocus.
+- **Walk** switches between walking on the spot and the idle motion.
+- In a comparison, each half of the screen has its own camera. Click **Dialogue** to set a topic, let Qwen write the two speech bubbles, edit them or hide them. The avatars resemble real politicians, so Qwen is told to only welcome the audience and name the topic, never to voice an opinion or a quote.
 
-You can check it in another Terminal window:
+A photo must show one person facing the camera, head to shoes, arms hanging down, hands and feet visible. A plain background helps. The name used with a photo may only contain letters, spaces, hyphens and apostrophes.
+
+Typical times on an M1 Pro: GPT Name 3D 60 s, Ollama Name 3D 100 s, Local Photo 3D 60 to 85 s, Ollama Photo 3D 105 s, Photo Compare about 3 minutes. The 3D step alone takes about 30 s. Results are cached, so the same name or photo loads in a second the next time.
+
+## Docker and DUUI
+
+The container runs the same backend as a DUUI component. It does not include Unity or the model weights.
+
+1. Run the first setup above so `backend_python/local_models/` exists; docker compose mounts it read-only.
+2. Keep Ollama running on the host if you want the Ollama routes; the container reaches it through `host.docker.internal`.
+3. Start it:
 
 ```bash
-curl http://127.0.0.1:8000/api/health
-```
-
-On Windows PowerShell, use:
-
-```powershell
-curl.exe http://127.0.0.1:8000/api/health
-```
-
-The expected answer is:
-
-```json
-{"status":"ok","service":"meta-avatar"}
-```
-
-Next, open `Test/frontend_unity` with Unity Hub, open `SampleScene`, and press **Play**.
-
-Press `Control+C` in the backend Terminal when you want to stop it.
-
-## Run With Docker
-
-Docker starts the backend and the DUUI service. It does not open Unity for you.
-
-First, start Docker Desktop.
-
-### macOS
-
-```bash
-cd /path/to/meta_avatar_llm/Test
-export OPENAI_API_KEY='your-api-key'
+cd Test
+export OPENAI_API_KEY='sk-...'   # optional
 docker compose up --build
 ```
 
-If Terminal says `docker: command not found`, use the Docker Desktop command directly:
-
-```bash
-/Applications/Docker.app/Contents/Resources/bin/docker compose up --build
-```
-
-### Windows PowerShell
-
-```powershell
-cd C:\path\to\meta_avatar_llm\Test
-$env:OPENAI_API_KEY='your-api-key'
-docker compose up --build
-```
-
-The container uses port `8000` on your computer and port `9714` inside Docker. Open Unity separately and use the same backend address:
-
-```text
-http://127.0.0.1:8000/api/avatar
-```
-
-The Docker setup calls Ollama on the host computer through `host.docker.internal`. Ollama must already be running on the host before comparison mode is used.
-
-Stop the container with:
-
-```bash
-docker compose down
-```
-
-or:
-
-```bash
-/Applications/Docker.app/Contents/Resources/bin/docker compose down
-```
-
-Docker saves generated models in the `test_meta-avatar-models` volume.
-
-## DUUI Endpoints
-
-The Docker service can also be used as a DUUI component.
+The service listens on port `8000` of the host (`9714` inside the container). mediapipe only has x86_64 Linux wheels, so the image is `linux/amd64`. On Apple Silicon it runs under emulation and TripoSR is several times slower than with the local launcher; use Docker for DUUI servers and the launcher for the demo.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `/v1/typesystem` | Returns the UIMA TypeSystem |
-| `/v1/communication_layer` | Returns the Lua communication layer |
-| `/v1/documentation` | Shows component information |
-| `/v1/details/input_output` | Shows the input and output types |
-| `/v1/process` | Creates or loads an avatar |
+| `GET /v1/typesystem` | UIMA TypeSystem |
+| `GET /v1/communication_layer` | Lua communication layer |
+| `GET /v1/documentation` | component information |
+| `GET /v1/details/input_output` | input and output types |
+| `POST /v1/process` | creates or loads an avatar; result type `org.metaavatar.annotation.MetaAvatar3D` |
+| `GET /api/avatar?name=&provider=openai\|ollama` | name to avatar |
+| `POST /api/avatar-from-image` (form: `name`, `image`, `provider=local\|ollama`) | photo to avatar |
+| `GET /api/compare?name=` | GPT and Flux side by side |
+| `POST /api/compare-photo` (form: `name`, `image`) | Stable Diffusion and Qwen + Flux side by side |
+| `GET /api/dialogue?topic=` | two speech bubble lines from Qwen |
+| `POST /api/batch` | several names one after another |
+| `GET /api/german-members` | current MP names from the Bundestag open data |
 
-The normal web API also has these new endpoints:
+If the DUUI client runs on another machine, set `META_AVATAR_PUBLIC_BASE_URL` to an address that machine can reach, for example `http://192.0.2.10:8000`. `include_binary=true` puts the GLB and PNG data directly into the CAS.
 
-| Endpoint | Purpose |
-| --- | --- |
-| `/api/compare` | Runs GPT Image and Ollama together and returns two GLB URLs |
-| `/api/batch` | Generates a JSON list of names one after another |
-| `/api/german-members` | Reads the current MP names from the official Bundestag open-data file |
+## Settings
 
-This example returns the first 20 names from the official German Bundestag list:
-
-```bash
-curl 'http://127.0.0.1:8000/api/german-members?start=0&limit=20'
-```
-
-This example starts a small batch through the backend API:
-
-```bash
-curl -X POST 'http://127.0.0.1:8000/api/batch' \
-  -H 'Content-Type: application/json' \
-  -d '{"names":["Sanae Abdi","Knut Abraham"],"provider":"openai","force":false}'
-```
-
-The DUUI result type is `org.metaavatar.annotation.MetaAvatar3D`.
-
-If the DUUI client runs on another computer, set `META_AVATAR_PUBLIC_BASE_URL` to an address that the other computer can reach. For example:
-
-```text
-http://192.0.2.10:8000
-```
-
-This is only an example address. Replace it with the real IP address or domain name of your server. You can also use `include_binary=true` to put the GLB and PNG data directly into the CAS.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | none | enables the GPT buttons |
+| `META_AVATAR_MC_RESOLUTION` | `256` | TripoSR marching cubes resolution. 128 gives about a quarter of the vertices and a visibly coarser avatar |
+| `META_AVATAR_LOCAL_MODELS` | `backend_python/local_models` | where the local models live |
+| `META_AVATAR_LOCAL_3D_DEVICE` | `cpu` | device for TripoSR |
+| `META_AVATAR_LOCAL_IMAGE_DEVICE` | `auto` | device for Stable Diffusion (Apple MPS when available) |
+| `META_AVATAR_LOCAL_PHOTO_STRENGTH` | `0.42` | how far Stable Diffusion may move away from the photo |
+| `META_AVATAR_OLLAMA_IMAGE_MODEL` | `x/flux2-klein:4b` | Flux model in Ollama |
+| `META_AVATAR_OLLAMA_TEXT_MODEL` | `qwen3.5:4b` | Qwen model for reading photos and writing dialogue. `qwen3.5:0.8b` is smaller but got glasses wrong on half of our test photos |
+| `META_AVATAR_OUTPUT_DIR` | `backend_python/hf_generated_models` | where GLB and PNG files are saved |
 
 ## Saved Files
 
-When you run the normal Python backend, the files are saved here:
+`backend_python/hf_generated_models/` holds one GLB and one reference PNG per avatar:
 
-```text
-backend_python/hf_generated_models/
-```
+- `name-ai-cartoon-v1-xxxx.glb` from GPT, `...-v1-ollama-xxxx.glb` from Flux
+- `name-ai-cartoon-v1-photo-xxxx.glb` from Local Photo 3D, `...-photo-ollama-xxxx.glb` from Ollama Photo 3D
 
-Each avatar normally has two files:
-
-- `name-ai-cartoon-v1-xxxx.glb` is the 3D model.
-- `name-ai-cartoon-v1-xxxx.reference.png` is the generated cartoon picture.
+Delete a file to force it to be generated again.
 
 ## Common Problems
 
-### Port 8000 is already in use
+**Port 8000 is already in use.** Another backend is still running. Stop it with **Stop Backend**, `Ctrl+C`, or `lsof -ti :8000 | xargs kill`.
 
-Another backend or Docker container is already running. Stop it first, then try again.
+**Ollama Name 3D says this Ollama version cannot generate images.** Install Ollama 0.32.5 (see What You Need). The photo buttons keep working through the Stable Diffusion fallback.
 
-```bash
-lsof -nP -iTCP:8000 -sTCP:LISTEN
-```
+**"Use a photo of one person facing the camera ..."** The pose check rejected the photo. Common reasons: hands in front of the body, arms raised, feet cut off, a landscape picture, or more than one person.
 
-On Windows PowerShell, use:
+**The avatar looks coarse or blurry.** Check that `META_AVATAR_MC_RESOLUTION` is 256. A good avatar has about 20,000 vertices.
 
-```powershell
-Get-NetTCPConnection -LocalPort 8000
-```
+**Unity does not open from the launcher.** Install Unity `6000.5.4f1` in Unity Hub, or open `Test/frontend_unity` yourself.
 
-### The API key is missing
-
-The health endpoint can still say `ok`, but a new avatar cannot be generated without `OPENAI_API_KEY`. Add the key in the GUI or export it before starting the backend.
-
-### Generation takes a long time
-
-GPT Image and TripoSR are online services. A new model may take a few minutes. Do not click the generate button many times while one request is still running.
-
-A comparison builds two models, so it can take longer. A batch can also take a long time and use paid OpenAI image requests. Start by selecting two or three names. Only use **Generate all** when you understand the time and API cost.
-
-### Ollama comparison does not work
-
-Make sure Ollama is running and the image model has been downloaded:
-
-```bash
-ollama pull x/flux2-klein:4b
-```
-
-Check the version too:
-
-```bash
-ollama --version
-```
-
-Use Ollama `0.32.5` for this feature. Ollama `0.32.6` and newer will answer with `image generation models are not currently supported`. The normal launcher URL is `http://127.0.0.1:11434/api/generate`. Ollama image generation is experimental and the listed model currently only works on macOS.
-
-The 4B model is a 5.7 GB download and needs about 5.3 GiB of Metal memory plus Ollama's safety space. An 8 GB M1 Mac may only give Ollama about 4.8 GiB, so comparison mode cannot load this model there. GPT mode still works. Use a Mac with more unified memory or connect the Ollama URL to another Mac that can run the model.
-
-### Unity does not open
-
-Check that Unity `6000.5.4f1` is installed with Unity Hub. Also make sure the same Unity project is not already open in another window. On Windows, the launcher looks for Unity in the normal `C:\Program Files\Unity\Hub\Editor` folder.
-
-### The face is not exactly the same
-
-This program makes a cartoon avatar from one generated front picture. It is not a face scanner, so some facial details will be different from the real person.
-
-### The browser asks for `favicon.ico`
-
-A `404 Not Found` message for `favicon.ico` is harmless. It does not affect the backend.
+**The face is not exactly the person.** The image models draw a cartoon, not a portrait. A photo gives a closer result than a name.
