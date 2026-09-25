@@ -3,18 +3,18 @@ uvicorn[standard]==0.51.0
 mediapipe==0.10.21
 certifi==2026.7.22
 python-multipart==0.0.20
+# mediapipe 0.10.21 needs numpy 1.x; newer rembg releases need numpy 2.
+numpy<2
+rembg==2.0.65
+onnxruntime>=1.18,<2
 torch>=2.2,<3
-torchvision>=0.17,<1
-diffusers>=0.31,<1
 transformers>=4.41,<5
-accelerate>=0.31,<2
-safetensors>=0.4,<1
 huggingface-hub>=0.28,<2
 omegaconf>=2.3,<3
 einops>=0.7,<1
 trimesh>=4,<5
 scikit-image>=0.22,<1
-rembg>=2.0.65,<3
-opencv-python-headless==4.11.0.86
-onnxruntime>=1.18,<2
-imageio[ffmpeg]>=2.34,<3
+imageio>=2.34,<3
+diffusers>=0.31,<1
+accelerate>=0.31,<2
+safetensors>=0.4,<1

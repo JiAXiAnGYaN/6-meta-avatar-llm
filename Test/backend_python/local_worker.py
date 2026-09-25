@@ -1,278 +1,365 @@
+"""Local model runner for the Meta Avatar backend.
+
+The server never imports torch itself. Every heavy job runs in a short-lived
+child process started through this module, so the several gigabytes of model
+weights are handed back to the system as soon as one avatar is finished.
+
+Expected folder layout below the local model directory:
+
+    TripoSR/model/   config.yaml, model.ckpt   (stabilityai/TripoSR)
+    TripoSR/source/  tsr/...                   (code from the TripoSR Space)
+    u2net/           u2net.onnx                (rembg background removal)
+    stable-diffusion-v1-5/                     (fp16 weights, photo to cartoon)
+    .cache/          Hugging Face cache, holds the DINO config TripoSR needs
+
+prepare_local_models.py creates all of it.
+"""
+
 import argparse
 import gc
-import hashlib
-import inspect
 import os
-import re
 import subprocess
 import sys
 import threading
 import types
 from pathlib import Path
 
-tmp1=Path(__file__).resolve()
-tmp2=threading.Lock()
+WORKER_PATH = Path(__file__).resolve()
+BACKGROUND_MODEL = 'u2net'
+CARTOON_MODEL_FOLDER = 'stable-diffusion-v1-5'
+CARTOON_NEGATIVE_PROMPT = (
+    'photo, realistic photo, cropped body, close-up, side view, back view, two people, '
+    'duplicate person, group, crowd, extra arms, extra legs, raised arm, raised hand, waving, '
+    'hand gesture, action pose, crossed limbs, sitting, object, text, watermark, blurry face'
+)
+_worker_lock = threading.Lock()
+
+
+FLAGGED_EXIT_CODE = 3
+
 
 class LocalWorkerError(RuntimeError):
- pass
+    pass
 
-def _call(tmp3:list[str])->None:
- tmp4=int(os.getenv('META_AVATAR_LOCAL_TIMEOUT','7200'))
- with tmp2:
-  try:tmp5=subprocess.run([sys.executable,str(tmp1),*tmp3],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=tmp4)
-  except subprocess.TimeoutExpired as tmp6:raise LocalWorkerError('Local AI generation timed out.')from tmp6
- if tmp5.returncode!=0:
-  tmp6=(tmp5.stderr or tmp5.stdout).strip().splitlines()
-  raise LocalWorkerError(tmp6[-1]if tmp6 else'Local AI worker failed.')
 
-def make_image(tmp3:str,tmp4:Path,tmp5:str,tmp6:str)->None:
- _call(['image','--prompt',tmp3,'--output',str(tmp4),'--model',tmp5,'--device',tmp6])
+class ResultFlagged(LocalWorkerError):
+    """The safety checker rejected one generated image. Another seed usually passes."""
 
-def make_photo(tmp3:str,tmp4:Path,tmp5:Path,tmp6:str,tmp7:str)->None:
- _call(['photo','--prompt',tmp3,'--input',str(tmp4),'--output',str(tmp5),'--model',tmp6,'--device',tmp7])
 
-def make_3d(tmp3:Path,tmp4:Path,tmp5:Path,tmp6:int,tmp7:float,tmp8:str,tmp9:Path|None=None)->None:
- tmp10=['3d','--image',str(tmp3),'--output',str(tmp4),'--root',str(tmp5),'--resolution',str(tmp6),'--ratio',str(tmp7),'--device',tmp8]
- if tmp9 is not None:tmp10+=['--processed',str(tmp9)]
- _call(tmp10)
+def run_triposr(
+    image_path: Path,
+    output_path: Path,
+    processed_path: Path,
+    *,
+    models_dir: Path,
+    resolution: int,
+    foreground_ratio: float,
+    device: str,
+) -> None:
+    """Build a GLB from one front full-body image.
 
-def _off()->bool:
- return os.getenv('HF_HUB_OFFLINE','').strip().lower()in{'1','true','yes','on'}
+    processed_path receives the cut-out, rescaled image TripoSR actually saw.
+    The texture baker needs exactly that framing to line the picture up with
+    the mesh.
+    """
+    _run_worker([
+        'triposr',
+        '--image', str(image_path),
+        '--output', str(output_path),
+        '--processed', str(processed_path),
+        '--models-dir', str(models_dir),
+        '--resolution', str(resolution),
+        '--foreground-ratio', str(foreground_ratio),
+        '--device', device,
+    ])
 
-def _root(tmp3:str)->Path:
- tmp4=Path(tmp3).expanduser()
- if not tmp4.is_absolute():
-  tmp5=tmp1.parent.parent/tmp4 if tmp4.parts and tmp4.parts[0]=='backend_python'else tmp1.parent/tmp4
-  tmp4=tmp5
- return tmp4.resolve()
 
-def _env(tmp3:Path)->None:
- tmp4=tmp3.parent/'.cache'
- tmp4.mkdir(parents=True,exist_ok=True)
- os.environ['HF_HOME']=str(tmp4)
- os.environ['HF_HUB_CACHE']=str(tmp4/'hub')
- os.environ['U2NET_HOME']=str(tmp3.parent/'u2net')
- os.environ.setdefault('HF_HUB_DISABLE_XET','1')
+def run_photo_cartoon(
+    photo_path: Path,
+    output_path: Path,
+    prompt: str,
+    *,
+    models_dir: Path,
+    device: str,
+    strength: float,
+    seed: int,
+) -> None:
+    """Redraw a front full-body photo as a 3D cartoon with Stable Diffusion img2img.
 
-def _snap(tmp3:str,tmp4:Path,tmp5:str='model',tmp6:list[str]|None=None)->None:
- if _off():raise LocalWorkerError('Local model files are missing. Turn off offline mode and run once with internet access.')
- try:
-  from huggingface_hub import snapshot_download
-  tmp4.mkdir(parents=True,exist_ok=True)
-  tmp7={'repo_id':tmp3,'local_dir':str(tmp4)}
-  if tmp5!='model':tmp7['repo_type']=tmp5
-  if tmp6:tmp7['allow_patterns']=tmp6
-  snapshot_download(**tmp7)
- except Exception as tmp8:raise LocalWorkerError('Local model download failed. Check the internet connection and free disk space.')from tmp8
+    strength decides how far the result may drift from the photo: low values
+    keep the pose and clothes, high values give a stronger cartoon look.
+    """
+    _run_worker([
+        'cartoonize',
+        '--photo', str(photo_path),
+        '--output', str(output_path),
+        '--prompt', prompt,
+        '--models-dir', str(models_dir),
+        '--device', device,
+        '--strength', str(strength),
+        '--seed', str(seed),
+    ])
 
-def _mc()->None:
- import numpy as tmp3
- import torch as tmp4
- from skimage.measure import marching_cubes as tmp5
- def run(tmp6,tmp7):
-  tmp8=tmp6.detach().float().cpu().numpy()
-  try:tmp9,tmp10,_,_=tmp5(tmp8,level=float(tmp7),allow_degenerate=False)
-  except Exception as tmp11:raise RuntimeError('The local 3D model did not create a usable surface.')from tmp11
-  tmp9=tmp3.ascontiguousarray(tmp9,dtype=tmp3.float32)
-  tmp10=tmp3.ascontiguousarray(tmp10,dtype=tmp3.int64)
-  return tmp4.from_numpy(tmp9).to(tmp6.device),tmp4.from_numpy(tmp10).to(tmp6.device)
- tmp6=types.ModuleType('torchmcubes')
- tmp6.marching_cubes=run
- sys.modules['torchmcubes']=tmp6
 
-def _device(tmp3:str):
- import torch
- tmp4=tmp3.strip().lower()
- if tmp4=='auto':
-  if torch.cuda.is_available():tmp4='cuda'
-  elif hasattr(torch.backends,'mps')and torch.backends.mps.is_available():tmp4='mps'
-  else:tmp4='cpu'
- if tmp4.startswith('cuda')and not torch.cuda.is_available():raise LocalWorkerError('CUDA was selected but is not available.')
- if tmp4=='mps'and(not hasattr(torch.backends,'mps')or not torch.backends.mps.is_available()):raise LocalWorkerError('Apple Metal was selected but is not available.')
- if tmp4!='cpu'and tmp4!='mps'and not tmp4.startswith('cuda'):raise LocalWorkerError('Local device must be cpu, mps, cuda, or auto.')
- return tmp4
+def _run_worker(arguments: list[str]) -> None:
+    timeout = int(os.getenv('META_AVATAR_LOCAL_TIMEOUT', '1800'))
+    # One job at a time: two TripoSR runs side by side do not fit in 16 GB.
+    with _worker_lock:
+        try:
+            result = subprocess.run(
+                [sys.executable, str(WORKER_PATH), *arguments],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise LocalWorkerError('The local model took too long and was stopped.') from error
+    if result.returncode == FLAGGED_EXIT_CODE:
+        raise ResultFlagged('The image model flagged this result.')
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise LocalWorkerError(lines[-1] if lines else 'The local model worker failed.')
 
-def _image_path(tmp3:str,tmp4:Path)->Path:
- tmp5=Path(tmp3).expanduser()
- if tmp5.is_dir():return tmp5.resolve()
- if tmp5.is_absolute()or tmp3.startswith('.'):
-  raise LocalWorkerError('The configured local image model folder does not exist.')
- tmp6=re.sub('[^a-zA-Z0-9._-]+','-',tmp3.rsplit('/',1)[-1]).strip('-')or'image-model'
- tmp7=tmp4.parent/tmp6
- if not(tmp7/'model_index.json').is_file():
-  tmp8=['model_index.json','feature_extractor/**','scheduler/**','tokenizer/**','*/config.json','unet/*fp16.safetensors','vae/*fp16.safetensors','text_encoder/*fp16.safetensors','safety_checker/*fp16.safetensors']
-  _snap(tmp3,tmp7,tmp6=tmp8)
- return tmp7
 
-def _safe(tmp3,tmp4:Path,tmp5:Path)->None:
- import numpy as tmp6
- import torch
- from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
- from transformers import CLIPImageProcessor
- tmp7=StableDiffusionSafetyChecker.from_pretrained(str(tmp4/'safety_checker'),dtype=torch.float32,local_files_only=True,variant='fp16')
- tmp8=CLIPImageProcessor.from_pretrained(str(tmp4/'feature_extractor'),local_files_only=True)
- tmp9=tmp8(images=[tmp3],return_tensors='pt')
- tmp10=tmp6.expand_dims(tmp6.asarray(tmp3).astype(tmp6.float32)/255,0)
- with torch.inference_mode():_,tmp11=tmp7(images=tmp10,clip_input=tmp9.pixel_values.float())
- if tmp11[0]:raise LocalWorkerError('The local image model blocked this result.')
- tmp5.parent.mkdir(parents=True,exist_ok=True);tmp3.save(tmp5,format='PNG')
+# Everything below runs inside the child process.
 
-def _image(tmp3)->None:
- tmp4=_root(os.getenv('META_AVATAR_TRIPOSR_PATH',str(tmp1.parent/'local_models'/'TripoSR')))
- _env(tmp4)
- tmp5=_image_path(tmp3.model,tmp4)
- try:
-  import torch
-  from diffusers import StableDiffusionPipeline
-  tmp6=_device(tmp3.device)
-  tmp7=torch.float16 if tmp6!='cpu'else torch.float32
-  tmp14={'torch_dtype':tmp7,'local_files_only':True,'safety_checker':None,'requires_safety_checker':False}
-  if(tmp5/'unet'/'diffusion_pytorch_model.fp16.safetensors').is_file():tmp14.update({'variant':'fp16','use_safetensors':True})
-  tmp8=StableDiffusionPipeline.from_pretrained(str(tmp5),**tmp14)
-  tmp8.enable_attention_slicing()
-  if hasattr(tmp8,'vae')and hasattr(tmp8.vae,'enable_slicing'):tmp8.vae.enable_slicing()
-  tmp8=tmp8.to(tmp6)
-  tmp9=int(hashlib.sha256((tmp3.prompt+str(os.getpid())).encode('utf-8')).hexdigest()[:8],16)
-  tmp10=torch.Generator(device='cpu').manual_seed(tmp9)
-  tmp11='photo, realistic photo, cropped body, close-up, side view, back view, two people, duplicate person, group, crowd, extra person, extra arms, extra legs, raised arm, raised hand, waving, hand gesture, action pose, crossed limbs, sitting, object, text, watermark, blurry face'
-  tmp15=os.getenv('META_AVATAR_LOCAL_IMAGE_SIZE','512x768').lower().split('x')
-  try:tmp16,tmp17=int(tmp15[0]),int(tmp15[1])
-  except Exception as tmp18:raise LocalWorkerError('Local image size must look like 512x768.')from tmp18
-  if tmp16<256 or tmp17<256 or tmp16>1024 or tmp17>1024 or tmp16%8 or tmp17%8:raise LocalWorkerError('Local image size must use multiples of 8 from 256 to 1024.')
-  with torch.inference_mode():tmp12=tmp8(tmp3.prompt,negative_prompt=tmp11,width=tmp16,height=tmp17,num_inference_steps=int(os.getenv('META_AVATAR_LOCAL_IMAGE_STEPS','20')),guidance_scale=7.5,generator=tmp10)
-  tmp13=tmp12.images[0]
-  del tmp8,tmp12
-  if tmp6=='mps'and hasattr(torch,'mps'):torch.mps.empty_cache()
-  gc.collect()
-  _safe(tmp13,tmp5,Path(tmp3.output))
- except LocalWorkerError:raise
- except Exception as tmp14:
-  tmp15=str(tmp14).lower()
-  if'out of memory'in tmp15 or'cannot allocate memory'in tmp15:raise LocalWorkerError('The local image model ran out of memory. Close other programs and try again.')from tmp14
-  raise LocalWorkerError('Local cartoon generation failed: '+str(tmp14))from tmp14
- finally:
-  gc.collect()
+def _use_local_model_folders(models_dir: Path) -> None:
+    cache = models_dir / '.cache'
+    os.environ['HF_HOME'] = str(cache)
+    os.environ['HF_HUB_CACHE'] = str(cache / 'hub')
+    os.environ['U2NET_HOME'] = str(models_dir / 'u2net')
 
-def _photo(tmp3)->None:
- tmp4=_root(os.getenv('META_AVATAR_TRIPOSR_PATH',str(tmp1.parent/'local_models'/'TripoSR')))
- _env(tmp4)
- tmp5=_image_path(tmp3.model,tmp4)
- try:
-  import rembg
-  import torch
-  from diffusers import StableDiffusionImg2ImgPipeline
-  from PIL import Image,ImageOps
-  tmp6=_device(tmp3.device)
-  tmp7=torch.float16 if tmp6!='cpu'else torch.float32
-  tmp8={'torch_dtype':tmp7,'local_files_only':True,'safety_checker':None,'requires_safety_checker':False}
-  if(tmp5/'unet'/'diffusion_pytorch_model.fp16.safetensors').is_file():tmp8.update({'variant':'fp16','use_safetensors':True})
-  tmp9=StableDiffusionImg2ImgPipeline.from_pretrained(str(tmp5),**tmp8)
-  tmp9.enable_attention_slicing()
-  if hasattr(tmp9,'vae')and hasattr(tmp9.vae,'enable_slicing'):tmp9.vae.enable_slicing()
-  tmp9=tmp9.to(tmp6)
-  tmp10=Image.open(tmp3.input).convert('RGB')
-  try:tmp11=rembg.new_session('u2netp');tmp10=rembg.remove(tmp10,session=tmp11).convert('RGBA')
-  except Exception as tmp12:
-   if _off():raise LocalWorkerError('The local background removal model is missing.')from tmp12
-   raise LocalWorkerError('The background removal model could not be downloaded.')from tmp12
-  tmp13=os.getenv('META_AVATAR_LOCAL_IMAGE_SIZE','512x768').lower().split('x')
-  try:tmp14,tmp15=int(tmp13[0]),int(tmp13[1])
-  except Exception as tmp16:raise LocalWorkerError('Local image size must look like 512x768.')from tmp16
-  if tmp14<256 or tmp15<256 or tmp14>1024 or tmp15>1024 or tmp14%8 or tmp15%8:raise LocalWorkerError('Local image size must use multiples of 8 from 256 to 1024.')
-  tmp10=ImageOps.contain(tmp10,(tmp14,tmp15),Image.Resampling.LANCZOS)
-  tmp17=Image.new('RGBA',(tmp14,tmp15),(190,190,190,255));tmp17.paste(tmp10,((tmp14-tmp10.width)//2,(tmp15-tmp10.height)//2),tmp10);tmp17=tmp17.convert('RGB')
-  tmp18=float(os.getenv('META_AVATAR_LOCAL_PHOTO_STRENGTH','0.42'))
-  if tmp18<0.2 or tmp18>0.75:raise LocalWorkerError('Local photo strength must be from 0.2 to 0.75.')
-  tmp19=int(hashlib.sha256(tmp3.prompt.encode('utf-8')+Path(tmp3.input).read_bytes()+str(os.getpid()).encode('utf-8')).hexdigest()[:8],16)
-  tmp20=torch.Generator(device='cpu').manual_seed(tmp19)
-  tmp21='photo, realistic photo, cropped body, close-up, side view, back view, two people, duplicate person, group, crowd, extra person, extra arms, extra legs, raised arm, raised hand, waving, hand gesture, action pose, crossed limbs, sitting, object, text, watermark, blurry face'
-  with torch.inference_mode():tmp22=tmp9(prompt=tmp3.prompt,negative_prompt=tmp21,image=tmp17,strength=tmp18,num_inference_steps=int(os.getenv('META_AVATAR_LOCAL_IMAGE_STEPS','20')),guidance_scale=7.5,generator=tmp20)
-  tmp23=tmp22.images[0]
-  del tmp9,tmp22
-  if tmp6=='mps'and hasattr(torch,'mps'):torch.mps.empty_cache()
-  gc.collect();_safe(tmp23,tmp5,Path(tmp3.output))
- except LocalWorkerError:raise
- except Exception as tmp24:
-  tmp25=str(tmp24).lower()
-  if'out of memory'in tmp25 or'cannot allocate memory'in tmp25:raise LocalWorkerError('Local photo cartoon generation ran out of memory. Close other programs and try again.')from tmp24
-  raise LocalWorkerError('Local photo cartoon generation failed: '+str(tmp24))from tmp24
- finally:
-  gc.collect()
 
-def _tripo_files(tmp3:Path)->tuple[Path,Path]:
- tmp4=tmp3/'source';tmp5=tmp3/'model'
- if not(tmp4/'tsr'/'system.py').is_file():_snap('stabilityai/TripoSR',tmp4,'space',['tsr/**'])
- if not(tmp5/'config.yaml').is_file()or not(tmp5/'model.ckpt').is_file():_snap('stabilityai/TripoSR',tmp5)
- try:
-  from huggingface_hub import snapshot_download
-  if _off():snapshot_download('facebook/dino-vitb16',allow_patterns=['config.json'],local_files_only=True)
-  else:snapshot_download('facebook/dino-vitb16',allow_patterns=['config.json'])
- except Exception as tmp6:
-  if _off():raise LocalWorkerError('The local DINO files are missing. Turn off offline mode and run once with internet access.')from tmp6
-  raise LocalWorkerError('The DINO model download failed.')from tmp6
- return tmp4,tmp5
+def _install_marching_cubes() -> None:
+    """Provide the torchmcubes module TripoSR imports, backed by scikit-image.
 
-def _fill(tmp3):
- import numpy as tmp4
- from PIL import Image
- tmp5=tmp4.array(tmp3).astype(tmp4.float32)/255
- tmp5=tmp5[:,:,:3]*tmp5[:,:,3:4]+(1-tmp5[:,:,3:4])*.5
- return Image.fromarray((tmp5*255).astype(tmp4.uint8))
+    torchmcubes has no macOS wheel. Its vertices come out in (k, j, i) order,
+    and TripoSR swaps them back with v_pos[..., [2, 1, 0]]. scikit-image
+    already returns (i, j, k), so the columns are reversed here first;
+    without that the finished avatar lies on its back. Reversing the axes
+    mirrors the mesh, so the triangle winding is flipped as well to keep the
+    faces pointing outwards.
+    """
+    import numpy as np
+    import torch
+    from skimage.measure import marching_cubes as skimage_marching_cubes
 
-def _three(tmp3)->None:
- tmp4=_root(tmp3.root);_env(tmp4)
- tmp5,tmp6=_tripo_files(tmp4)
- sys.path.insert(0,str(tmp5));_mc()
- try:
-  import rembg
-  import torch
-  from PIL import Image
-  from tsr.system import TSR
-  from tsr.utils import remove_background,resize_foreground,to_gradio_3d_orientation
-  tmp7=_device(tmp3.device)
-  if tmp7=='cpu':torch.set_num_threads(max(1,min(4,os.cpu_count()or 1)))
-  tmp8=Image.open(tmp3.image).convert('RGB')
-  try:tmp9=rembg.new_session('u2netp')
-  except Exception as tmp10:
-   if _off():raise LocalWorkerError('The local background removal model is missing. Turn off offline mode and run once with internet access.')from tmp10
-   raise LocalWorkerError('The background removal model could not be downloaded.')from tmp10
-  tmp8=remove_background(tmp8,tmp9)
-  tmp8=resize_foreground(tmp8,float(tmp3.ratio))
-  tmp8=_fill(tmp8)
-  if tmp3.processed:
-   tmp15=Path(tmp3.processed);tmp15.parent.mkdir(parents=True,exist_ok=True);tmp8.save(tmp15,format='PNG')
-  tmp10=TSR.from_pretrained(str(tmp6),config_name='config.yaml',weight_name='model.ckpt')
-  tmp10.renderer.set_chunk_size(int(os.getenv('META_AVATAR_LOCAL_CHUNK_SIZE','4096')))
-  tmp10.to(tmp7)
-  with torch.inference_mode():tmp11=tmp10([tmp8],device=tmp7)
-  if'has_vertex_color'in inspect.signature(tmp10.extract_mesh).parameters:tmp12=tmp10.extract_mesh(tmp11,True,resolution=int(tmp3.resolution))[0]
-  else:tmp12=tmp10.extract_mesh(tmp11,resolution=int(tmp3.resolution))[0]
-  tmp12=to_gradio_3d_orientation(tmp12)
-  try:tmp12.fix_normals()
-  except Exception:pass
-  tmp13=Path(tmp3.output);tmp13.parent.mkdir(parents=True,exist_ok=True);tmp12.export(tmp13)
-  if not tmp13.is_file()or tmp13.stat().st_size==0:raise LocalWorkerError('The local 3D model returned an empty GLB file.')
- except LocalWorkerError:raise
- except Exception as tmp14:
-  tmp15=str(tmp14).lower()
-  if'out of memory'in tmp15 or'cannot allocate memory'in tmp15:raise LocalWorkerError('Local TripoSR ran out of memory. Close other programs and try again.')from tmp14
-  raise LocalWorkerError('Local TripoSR failed: '+str(tmp14))from tmp14
- finally:
-  gc.collect()
+    def marching_cubes(volume, threshold):
+        grid = volume.detach().float().cpu().numpy()
+        try:
+            vertices, faces, _, _ = skimage_marching_cubes(grid, level=float(threshold), allow_degenerate=False)
+        except (RuntimeError, ValueError) as error:
+            raise RuntimeError('TripoSR found no surface in this image.') from error
+        vertices = np.ascontiguousarray(vertices[:, ::-1], dtype=np.float32)
+        faces = np.ascontiguousarray(faces[:, ::-1], dtype=np.int64)
+        return torch.from_numpy(vertices).to(volume.device), torch.from_numpy(faces).to(volume.device)
 
-def main()->None:
- tmp3=argparse.ArgumentParser()
- tmp4=tmp3.add_subparsers(dest='mode',required=True)
- tmp5=tmp4.add_parser('image');tmp5.add_argument('--prompt',required=True);tmp5.add_argument('--output',required=True);tmp5.add_argument('--model',required=True);tmp5.add_argument('--device',required=True)
- tmp6=tmp4.add_parser('photo');tmp6.add_argument('--prompt',required=True);tmp6.add_argument('--input',required=True);tmp6.add_argument('--output',required=True);tmp6.add_argument('--model',required=True);tmp6.add_argument('--device',required=True)
- tmp9=tmp4.add_parser('3d');tmp9.add_argument('--image',required=True);tmp9.add_argument('--output',required=True);tmp9.add_argument('--root',required=True);tmp9.add_argument('--resolution',type=int,required=True);tmp9.add_argument('--ratio',type=float,required=True);tmp9.add_argument('--device',required=True);tmp9.add_argument('--processed')
- tmp7=tmp3.parse_args()
- try:
-  if tmp7.mode=='image':_image(tmp7)
-  elif tmp7.mode=='photo':_photo(tmp7)
-  else:_three(tmp7)
- except Exception as tmp8:
-  print(str(tmp8),file=sys.stderr)
-  raise SystemExit(1)
+    module = types.ModuleType('torchmcubes')
+    module.marching_cubes = marching_cubes
+    sys.modules['torchmcubes'] = module
 
-if __name__=='__main__':main()
+
+def _pick_device(requested: str) -> str:
+    import torch
+
+    device = requested.strip().lower()
+    if device == 'auto':
+        if torch.cuda.is_available():
+            return 'cuda'
+        if torch.backends.mps.is_available():
+            return 'mps'
+        return 'cpu'
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        raise LocalWorkerError('CUDA was selected but is not available.')
+    if device == 'mps' and not torch.backends.mps.is_available():
+        raise LocalWorkerError('Apple Metal was selected but is not available.')
+    if device not in {'cpu', 'mps'} and not device.startswith('cuda'):
+        raise LocalWorkerError('The device must be cpu, mps, cuda or auto.')
+    return device
+
+
+def _on_grey_background(image):
+    """Flatten an RGBA cut-out onto 50 % grey, the way the TripoSR demo does."""
+    import numpy as np
+    from PIL import Image
+
+    pixels = np.asarray(image).astype(np.float32) / 255.0
+    alpha = pixels[:, :, 3:4]
+    flattened = pixels[:, :, :3] * alpha + (1.0 - alpha) * 0.5
+    return Image.fromarray((flattened * 255.0).astype(np.uint8))
+
+
+def _reconstruct(args: argparse.Namespace) -> None:
+    models_dir = Path(args.models_dir).expanduser().resolve()
+    source_dir = models_dir / 'TripoSR' / 'source'
+    weights_dir = models_dir / 'TripoSR' / 'model'
+    if not (source_dir / 'tsr' / 'system.py').is_file() or not (weights_dir / 'model.ckpt').is_file():
+        raise LocalWorkerError('TripoSR is not downloaded yet. Run prepare_local_models.py once while online.')
+    if not (models_dir / 'u2net' / f'{BACKGROUND_MODEL}.onnx').is_file():
+        raise LocalWorkerError('The background removal model is missing. Run prepare_local_models.py once while online.')
+
+    _use_local_model_folders(models_dir)
+    sys.path.insert(0, str(source_dir))
+    _install_marching_cubes()
+
+    import rembg
+    import torch
+    from PIL import Image
+    from tsr.system import TSR
+    from tsr.utils import remove_background, resize_foreground, to_gradio_3d_orientation
+
+    device = _pick_device(args.device)
+    if device == 'cpu':
+        torch.set_num_threads(max(1, min(8, os.cpu_count() or 1)))
+
+    image = Image.open(args.image).convert('RGB')
+    image = remove_background(image, rembg.new_session(BACKGROUND_MODEL))
+    image = resize_foreground(image, args.foreground_ratio)
+    image = _on_grey_background(image)
+    processed_path = Path(args.processed)
+    processed_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(processed_path, format='PNG')
+
+    model = TSR.from_pretrained(str(weights_dir), config_name='config.yaml', weight_name='model.ckpt')
+    model.renderer.set_chunk_size(int(os.getenv('META_AVATAR_LOCAL_CHUNK_SIZE', '8192')))
+    model.to(device)
+    with torch.inference_mode():
+        scene_codes = model([image], device=device)
+    mesh = model.extract_mesh(scene_codes, resolution=args.resolution)[0]
+    mesh = to_gradio_3d_orientation(mesh)
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.export(output_path)
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise LocalWorkerError('TripoSR wrote an empty model file.')
+
+
+def _passes_safety_checker(image, model_dir: Path) -> bool:
+    import numpy as np
+    import torch
+    from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
+    from transformers import CLIPImageProcessor
+
+    checker = StableDiffusionSafetyChecker.from_pretrained(
+        str(model_dir / 'safety_checker'), variant='fp16', dtype=torch.float32, local_files_only=True)
+    processor = CLIPImageProcessor.from_pretrained(str(model_dir / 'feature_extractor'), local_files_only=True)
+    clip_input = processor(images=[image], return_tensors='pt').pixel_values.float()
+    pixels = np.expand_dims(np.asarray(image).astype(np.float32) / 255.0, 0)
+    with torch.inference_mode():
+        _, flagged = checker(images=pixels, clip_input=clip_input)
+    return not flagged[0]
+
+
+def _cartoonize(args: argparse.Namespace) -> None:
+    models_dir = Path(args.models_dir).expanduser().resolve()
+    model_dir = models_dir / CARTOON_MODEL_FOLDER
+    if not (model_dir / 'model_index.json').is_file():
+        raise LocalWorkerError('Stable Diffusion is not downloaded yet. Run prepare_local_models.py once while online.')
+    if not (models_dir / 'u2net' / f'{BACKGROUND_MODEL}.onnx').is_file():
+        raise LocalWorkerError('The background removal model is missing. Run prepare_local_models.py once while online.')
+    if not 0.2 <= args.strength <= 0.75:
+        raise LocalWorkerError('The cartoon strength must be between 0.2 and 0.75.')
+    width, height = _cartoon_size()
+    _use_local_model_folders(models_dir)
+
+    import rembg
+    import torch
+    from diffusers import StableDiffusionImg2ImgPipeline
+    from PIL import Image, ImageOps
+
+    device = _pick_device(args.device)
+    pipeline = StableDiffusionImg2ImgPipeline.from_pretrained(
+        str(model_dir),
+        torch_dtype=torch.float32 if device == 'cpu' else torch.float16,
+        variant='fp16',
+        use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
+        local_files_only=True,
+    )
+    pipeline.enable_attention_slicing()
+    pipeline = pipeline.to(device)
+
+    # Cut the person out and centre them on plain grey so the background of
+    # the photo does not leak into the cartoon.
+    person = rembg.remove(Image.open(args.photo).convert('RGB'), session=rembg.new_session(BACKGROUND_MODEL))
+    person = ImageOps.contain(person.convert('RGBA'), (width, height), Image.Resampling.LANCZOS)
+    canvas = Image.new('RGBA', (width, height), (190, 190, 190, 255))
+    canvas.paste(person, ((width - person.width) // 2, (height - person.height) // 2), person)
+
+    with torch.inference_mode():
+        result = pipeline(
+            prompt=args.prompt,
+            negative_prompt=CARTOON_NEGATIVE_PROMPT,
+            image=canvas.convert('RGB'),
+            strength=args.strength,
+            num_inference_steps=int(os.getenv('META_AVATAR_LOCAL_IMAGE_STEPS', '20')),
+            guidance_scale=7.5,
+            generator=torch.Generator(device='cpu').manual_seed(args.seed),
+        )
+    cartoon = result.images[0]
+    del pipeline, result
+    if device == 'mps':
+        torch.mps.empty_cache()
+    gc.collect()
+
+    if not _passes_safety_checker(cartoon, model_dir):
+        raise ResultFlagged('The image model flagged this result.')
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cartoon.save(output_path, format='PNG')
+
+
+def _cartoon_size() -> tuple[int, int]:
+    text = os.getenv('META_AVATAR_LOCAL_IMAGE_SIZE', '512x768').lower()
+    try:
+        width, height = (int(part) for part in text.split('x'))
+    except ValueError as error:
+        raise LocalWorkerError('META_AVATAR_LOCAL_IMAGE_SIZE must look like 512x768.') from error
+    if not (256 <= width <= 1024 and 256 <= height <= 1024 and width % 8 == 0 and height % 8 == 0):
+        raise LocalWorkerError('META_AVATAR_LOCAL_IMAGE_SIZE must use multiples of 8 from 256 to 1024.')
+    return width, height
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    triposr = commands.add_parser('triposr', help='image to GLB')
+    triposr.add_argument('--image', required=True)
+    triposr.add_argument('--output', required=True)
+    triposr.add_argument('--processed', required=True)
+    triposr.add_argument('--models-dir', required=True)
+    triposr.add_argument('--resolution', type=int, required=True)
+    triposr.add_argument('--foreground-ratio', type=float, required=True)
+    triposr.add_argument('--device', required=True)
+    cartoonize = commands.add_parser('cartoonize', help='photo to cartoon image')
+    cartoonize.add_argument('--photo', required=True)
+    cartoonize.add_argument('--output', required=True)
+    cartoonize.add_argument('--prompt', required=True)
+    cartoonize.add_argument('--models-dir', required=True)
+    cartoonize.add_argument('--device', required=True)
+    cartoonize.add_argument('--strength', type=float, required=True)
+    cartoonize.add_argument('--seed', type=int, required=True)
+    args = parser.parse_args()
+    try:
+        if args.command == 'cartoonize':
+            _cartoonize(args)
+        else:
+            _reconstruct(args)
+    except ResultFlagged as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(FLAGGED_EXIT_CODE)
+    except Exception as error:
+        message = str(error)
+        if 'out of memory' in message.lower() or 'cannot allocate memory' in message.lower():
+            message = 'The local model ran out of memory. Close other programs and try again.'
+        print(message, file=sys.stderr)
+        raise SystemExit(1)
+    finally:
+        gc.collect()
+
+
+if __name__ == '__main__':
+    main()

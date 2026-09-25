@@ -24,21 +24,21 @@ import uvicorn
 from fastapi import FastAPI ,File ,Form ,HTTPException ,Query ,Request ,Response ,UploadFile
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from local_worker import LocalWorkerError,make_3d,make_image,make_photo
 from pydantic import BaseModel
+from local_worker import LocalWorkerError ,ResultFlagged ,run_photo_cartoon ,run_triposr
 logging.basicConfig (level =os.getenv ('META_AVATAR_LOG_LEVEL','INFO').upper (),format ='%(asctime)s %(levelname)s %(name)s: %(message)s')
 logger =logging.getLogger ('meta_avatar')
 BASE_DIR =Path (__file__ ).resolve ().parent
 MODEL_DIR =Path (os.getenv ('META_AVATAR_OUTPUT_DIR',str (BASE_DIR /'hf_generated_models'))).expanduser ()
 MODEL_DIR.mkdir (parents =True ,exist_ok =True )
 PUBLIC_BASE_URL =os.getenv ('META_AVATAR_PUBLIC_BASE_URL','').rstrip ('/')
-HUGGING_FACE_SPACE ='stabilityai/TripoSR local'
-THREE_D_MODE =os.getenv ('META_AVATAR_3D_MODE','local').strip ().lower ()
-TRIPOSR_PATH =Path (os.getenv ('META_AVATAR_TRIPOSR_PATH',str (BASE_DIR /'local_models'/'TripoSR'))).expanduser ()
+LOCAL_MODELS_DIR =Path (os.getenv ('META_AVATAR_LOCAL_MODELS',str (BASE_DIR /'local_models'))).expanduser ()
 LOCAL_3D_DEVICE =os.getenv ('META_AVATAR_LOCAL_3D_DEVICE','cpu')
 LOCAL_IMAGE_DEVICE =os.getenv ('META_AVATAR_LOCAL_IMAGE_DEVICE','auto')
-LOCAL_IMAGE_MODEL =os.getenv ('META_AVATAR_LOCAL_IMAGE_MODEL',str (BASE_DIR /'local_models'/'stable-diffusion-v1-5'))
-PIPELINE_VERSION ='ai-cartoon-local-v7'
+LOCAL_PHOTO_STRENGTH =float (os.getenv ('META_AVATAR_LOCAL_PHOTO_STRENGTH','0.42'))
+LOCAL_IMAGE_ATTEMPTS =int (os.getenv ('META_AVATAR_LOCAL_IMAGE_ATTEMPTS','3'))
+UPLOAD_LIMIT_BYTES =int (os.getenv ('META_AVATAR_UPLOAD_LIMIT_MB','15'))*1024 *1024
+PIPELINE_VERSION ='ai-cartoon-v1'
 FOREGROUND_RATIO =float (os.getenv ('META_AVATAR_FOREGROUND_RATIO','0.9'))
 if not 0.5 <=FOREGROUND_RATIO <=1.0 :
     raise ValueError ('META_AVATAR_FOREGROUND_RATIO must be between 0.5 and 1.0.')
@@ -48,40 +48,34 @@ OPENAI_IMAGE_SIZE =os.getenv ('META_AVATAR_OPENAI_IMAGE_SIZE','1024x1536')
 OPENAI_IMAGE_QUALITY =os.getenv ('META_AVATAR_OPENAI_IMAGE_QUALITY','medium')
 OPENAI_IMAGE_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_TIMEOUT','300'))
 OPENAI_IMAGE_ATTEMPTS =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_ATTEMPTS','2'))
-LOCAL_IMAGE_ATTEMPTS =int (os.getenv ('META_AVATAR_LOCAL_IMAGE_ATTEMPTS','4'))
 OPENAI_IMAGE_RESPONSE_LIMIT_BYTES =int (os.getenv ('META_AVATAR_OPENAI_IMAGE_RESPONSE_LIMIT_MB','30'))*1024 *1024
-LOCAL_IMAGE_LIMIT_BYTES =int (os.getenv ('META_AVATAR_LOCAL_IMAGE_LIMIT_MB','15'))*1024 *1024
 OLLAMA_IMAGE_API_URL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_API_URL','http://127.0.0.1:11434/api/generate')
 OLLAMA_IMAGE_MODEL =os.getenv ('META_AVATAR_OLLAMA_IMAGE_MODEL','x/flux2-klein:4b')
 OLLAMA_IMAGE_SIZE =os.getenv ('META_AVATAR_OLLAMA_IMAGE_SIZE','768x1024')
-OLLAMA_IMAGE_STEPS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_STEPS','4'))
 OLLAMA_IMAGE_TIMEOUT_SECONDS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_TIMEOUT','900'))
-OLLAMA_TEXT_API_URL =os.getenv ('META_AVATAR_OLLAMA_TEXT_API_URL','http://127.0.0.1:11434/api/generate')
-OLLAMA_TEXT_MODEL =os.getenv ('META_AVATAR_OLLAMA_TEXT_MODEL','qwen3.5:0.8b')
+OLLAMA_IMAGE_STEPS =int (os.getenv ('META_AVATAR_OLLAMA_IMAGE_STEPS','4'))
+OLLAMA_TEXT_API_URL =os.getenv ('META_AVATAR_OLLAMA_TEXT_API_URL',OLLAMA_IMAGE_API_URL )
+OLLAMA_TEXT_MODEL =os.getenv ('META_AVATAR_OLLAMA_TEXT_MODEL','qwen3.5:4b')
 BATCH_LIMIT =int (os.getenv ('META_AVATAR_BATCH_LIMIT','20'))
 BUNDESTAG_URL =os.getenv ('META_AVATAR_BUNDESTAG_URL','https://www.bundestag.de/resource/blob/472878/MdB-Stammdaten.zip')
 BUNDESTAG_PERIOD =int (os.getenv ('META_AVATAR_BUNDESTAG_PERIOD','21'))
 BUNDESTAG_LIMIT_BYTES =int (os.getenv ('META_AVATAR_BUNDESTAG_LIMIT_MB','30'))*1024 *1024
 if OPENAI_IMAGE_TIMEOUT_SECONDS <30 :
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_TIMEOUT must be at least 30.')
-if OPENAI_IMAGE_ATTEMPTS <1 or LOCAL_IMAGE_ATTEMPTS <1 :
-    raise ValueError ('Image attempts must be positive.')
+if OPENAI_IMAGE_ATTEMPTS <1 :
+    raise ValueError ('META_AVATAR_OPENAI_IMAGE_ATTEMPTS must be positive.')
 if OPENAI_IMAGE_RESPONSE_LIMIT_BYTES <1024 *1024 :
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_RESPONSE_LIMIT_MB must be at least 1.')
-if LOCAL_IMAGE_LIMIT_BYTES <1024 *1024 :
-    raise ValueError ('META_AVATAR_LOCAL_IMAGE_LIMIT_MB must be at least 1.')
 if OPENAI_IMAGE_QUALITY not in {'low','medium','high','auto'}:
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_QUALITY must be low, medium, high, or auto.')
 if not re.fullmatch ('\\d+x\\d+|auto',OPENAI_IMAGE_SIZE ):
     raise ValueError ('META_AVATAR_OPENAI_IMAGE_SIZE must be WIDTHxHEIGHT or auto.')
 if not re.fullmatch ('\\d+x\\d+',OLLAMA_IMAGE_SIZE ):
     raise ValueError ('META_AVATAR_OLLAMA_IMAGE_SIZE must be WIDTHxHEIGHT.')
-if OLLAMA_IMAGE_TIMEOUT_SECONDS <30 or OLLAMA_IMAGE_STEPS <1 or OLLAMA_IMAGE_STEPS >50 or BATCH_LIMIT <1 or BATCH_LIMIT >100 :
+if OLLAMA_IMAGE_TIMEOUT_SECONDS <30 or BATCH_LIMIT <1 or BATCH_LIMIT >100 :
     raise ValueError ('Ollama timeout or batch limit is invalid.')
-if THREE_D_MODE !='local':
-    raise ValueError ('META_AVATAR_3D_MODE must be local.')
 POSE_MODEL_PATH =Path (os.getenv ('META_AVATAR_POSE_MODEL',str (BASE_DIR /'models'/'pose_landmarker_lite.task'))).expanduser ()
-MARCHING_CUBES_RESOLUTION =int (os.getenv ('META_AVATAR_MC_RESOLUTION','128'))
+MARCHING_CUBES_RESOLUTION =int (os.getenv ('META_AVATAR_MC_RESOLUTION','256'))
 if MARCHING_CUBES_RESOLUTION <32 or MARCHING_CUBES_RESOLUTION >320 or MARCHING_CUBES_RESOLUTION %32 !=0 :
     raise ValueError ('META_AVATAR_MC_RESOLUTION must be a multiple of 32 between 32 and 320.')
 _GENERATION_LOCKS :dict [str ,threading.Lock ]={}
@@ -95,7 +89,7 @@ _SSL_CONTEXT =ssl.create_default_context (cafile =certifi.where ())
 tmpduui =BASE_DIR /'duui'
 tmpxml =(tmpduui /'typesystem.xml').read_text (encoding ='utf-8')
 tmplua =(tmpduui /'communication.lua').read_text (encoding ='utf-8')
-app =FastAPI (title ='Meta-Avatar AI Cartoon-to-3D API',version ='2.6.0',description ='Makes full-body cartoon images, Qwen dialogue and local GLB avatars from names or uploaded pictures.')
+app =FastAPI (title ='Meta-Avatar AI Cartoon-to-3D API',version ='2.3.0',description ='Generates full-body cartoon references with GPT Image or Ollama and reconstructs them as GLB models.')
 app.mount ('/models',StaticFiles (directory =str (MODEL_DIR )),name ='models')
 
 class AvatarResponse (BaseModel ):
@@ -107,6 +101,7 @@ class AvatarResponse (BaseModel ):
     cached :bool =False
     provider :str =''
     image_model :str =''
+    notice :str =''
 
 class CompareResponse (BaseModel ):
     name :str
@@ -115,9 +110,23 @@ class CompareResponse (BaseModel ):
     openai :AvatarResponse
     ollama :AvatarResponse
 
+class PhotoCompareResponse (BaseModel ):
+    name :str
+    status :str
+    message :str
+    left :AvatarResponse
+    right :AvatarResponse
+
+class DialogueResponse (BaseModel ):
+    status :Literal ['success','error']
+    message :str
+    left :str =''
+    right :str =''
+    model :str =''
+
 class BatchInput (BaseModel ):
     names :list [str ]=[]
-    provider :str ='local'
+    provider :str ='openai'
     force :bool =False
 
 class BatchResponse (BaseModel ):
@@ -137,13 +146,6 @@ class GermanMembersResponse (BaseModel ):
 class HealthResponse (BaseModel ):
     status :Literal ['ok']
     service :str
-
-class DialogueResponse (BaseModel ):
-    status :Literal ['success','error']
-    message :str
-    left :str =''
-    right :str =''
-    model :str =''
 
 class TmpInput(BaseModel):
     text:str=''
@@ -183,29 +185,17 @@ def model_filename (name :str ,provider :str ='openai')->str :
     tmp7 =re.sub ('[^a-zA-Z0-9]+','-',a3 ).strip ('-').lower ()
     tmp7 =tmp7 [:48 ]or 'avatar'
     if provider =='ollama':
-        b4 =':'.join ((PIPELINE_VERSION ,'ollama',OLLAMA_TEXT_MODEL ,OLLAMA_IMAGE_MODEL ,OLLAMA_IMAGE_SIZE ,str (OLLAMA_IMAGE_STEPS ),jieguo6.casefold ()))
-    elif provider =='local':
-        b4 =':'.join ((PIPELINE_VERSION ,'local',LOCAL_IMAGE_MODEL ,str (MARCHING_CUBES_RESOLUTION ),jieguo6.casefold ()))
+        b4 =':'.join ((PIPELINE_VERSION ,'ollama',OLLAMA_IMAGE_MODEL ,OLLAMA_IMAGE_SIZE ,jieguo6.casefold ()))
     else :
         b4 =':'.join ((PIPELINE_VERSION ,OPENAI_IMAGE_MODEL ,OPENAI_IMAGE_SIZE ,OPENAI_IMAGE_QUALITY ,jieguo6.casefold ()))
-    b4 +=':local3d:'+str (MARCHING_CUBES_RESOLUTION )
     dongxi5 =hashlib.sha256 (b4.encode ('utf-8')).hexdigest ()[:10 ]
-    tmp8 ='-ollama'if provider =='ollama'else ('-local-ai'if provider =='local'else '')
+    tmp8 ='-ollama'if provider =='ollama'else ''
     return f'{tmp7}-{PIPELINE_VERSION}{tmp8}-{dongxi5}.glb'
 
 def reference_image_filename (model_name :str )->str :
     if Path (model_name ).name !=model_name or not model_name.endswith ('.glb'):
         raise ValueError ('model_name must be a plain .glb filename')
     return f'{Path(model_name).stem}.reference.png'
-
-def local_model_filename (name :str ,tmp1 :bytes ,provider :str ='local')->str :
-    tmp2 =normalize_name (name )
-    tmp3 =unicodedata.normalize ('NFKD',tmp2 ).encode ('ascii','ignore').decode ('ascii')
-    tmp4 =re.sub ('[^a-zA-Z0-9]+','-',tmp3 ).strip ('-').lower ()[:48 ]or 'avatar'
-    tmp6 =('ollama:'+OLLAMA_TEXT_MODEL +':'+OLLAMA_IMAGE_MODEL +':'+OLLAMA_IMAGE_SIZE +':'+str (OLLAMA_IMAGE_STEPS ))if provider =='ollama'else ('local:'+LOCAL_IMAGE_MODEL )
-    tmp5 =hashlib.sha256 ((PIPELINE_VERSION +':upload-cartoon:'+tmp6 +':'+os.getenv ('META_AVATAR_LOCAL_PHOTO_STRENGTH','0.42')+':'+os.getenv ('META_AVATAR_LOCAL_IMAGE_STEPS','20')+':'+str (MARCHING_CUBES_RESOLUTION )+':'+tmp2.casefold ()+':').encode ('utf-8')+tmp1 ).hexdigest ()[:10 ]
-    tmp7 ='-ollama'if provider =='ollama'else ''
-    return f'{tmp4}-{PIPELINE_VERSION}-upload{tmp7}-{tmp5}.glb'
 
 def _generation_lock (filename :str )->threading.Lock :
     with _GENERATION_LOCKS_LOCK :
@@ -229,73 +219,65 @@ def _get_pose_landmarker ()->Any :
 def _landmark_is_visible (landmark :Any ,threshold :float =0.55 )->bool :
     return float (getattr (landmark ,'visibility',0.0 ))>=threshold and float (getattr (landmark ,'presence',0.0 ))>=threshold and (-0.02 <=float (landmark.x )<=1.02 )and (-0.02 <=float (landmark.y )<=1.02 )
 
-def pose_is_front_full_body (landmarks :Any ,cartoon :bool =False )->bool :
+def pose_is_front_full_body (landmarks :Any ,strict :bool =True )->bool :
+    """Check for one upright person facing the camera, head to shoes, arms down.
+
+    strict is for photos and GPT/Flux references. Stable Diffusion rarely
+    draws a perfectly level A-pose, so its output gets looser limits that
+    still rule out raised arms, crossed legs and side views.
+    """
     if not isinstance (landmarks ,(list ,tuple ))or len (landmarks )<33 :
         return False
-    b25 =landmarks [0 ]
-    b18 =landmarks [2 ]
-    linshi29 =landmarks [5 ]
-    linshi22 =landmarks [11 ]
-    dongxi33 =landmarks [12 ]
-    a17 =landmarks [13 ]
-    tmp28 =landmarks [14 ]
-    shuju23 =landmarks [15 ]
-    jieguo34 =landmarks [16 ]
-    jieguo20 =landmarks [23 ]
-    a31 =landmarks [24 ]
-    tmp21 =landmarks [25 ]
-    b32 =landmarks [26 ]
-    shuju16 =landmarks [27 ]
-    jieguo27 =landmarks [28 ]
-    dongxi19 =landmarks [31 ]
-    shuju30 =landmarks [32 ]
-    dongxi26 =(b25 ,b18 ,linshi29 ,linshi22 ,dongxi33 ,a17 ,tmp28 ,shuju23 ,jieguo34 ,jieguo20 ,a31 ,tmp21 ,b32 ,shuju16 ,jieguo27 ,dongxi19 ,shuju30 )
-    if not all ((_landmark_is_visible (linshi15 )for linshi15 in dongxi26 )):
+    (nose ,left_eye ,right_eye ,left_shoulder ,right_shoulder ,left_elbow ,right_elbow ,left_wrist ,right_wrist ,
+     left_hip ,right_hip ,left_knee ,right_knee ,left_ankle ,right_ankle ,left_foot ,right_foot )=(
+        landmarks [index ]for index in (0 ,2 ,5 ,11 ,12 ,13 ,14 ,15 ,16 ,23 ,24 ,25 ,26 ,27 ,28 ,31 ,32 ))
+    required =(nose ,left_eye ,right_eye ,left_shoulder ,right_shoulder ,left_elbow ,right_elbow ,left_wrist ,right_wrist ,
+               left_hip ,right_hip ,left_knee ,right_knee ,left_ankle ,right_ankle ,left_foot ,right_foot )
+    if not all (_landmark_is_visible (point )for point in required ):
         return False
-    jieguo13 =max (dongxi19.y ,shuju30.y ,shuju16.y ,jieguo27.y )
-    dongxi12 =jieguo13 -b25.y
-    if dongxi12 <0.45 :
+    body_height =max (left_foot.y ,right_foot.y ,left_ankle.y ,right_ankle.y )-nose.y
+    if body_height <0.45 :
         return False
-    a38 =abs (linshi22.x -dongxi33.x )
-    tmp14 =abs (jieguo20.x -a31.x )
-    if a38 /dongxi12 <0.12 or tmp14 /dongxi12 <0.07 :
+    shoulder_width =abs (left_shoulder.x -right_shoulder.x )
+    hip_width =abs (left_hip.x -right_hip.x )
+    if shoulder_width /body_height <0.12 or hip_width /body_height <0.07 :
         return False
-    if cartoon :
-        if abs (b18.y -linshi29.y )>dongxi12 *0.09 or abs (linshi22.y -dongxi33.y )>dongxi12 *0.14 or abs (jieguo20.y -a31.y )>dongxi12 *0.14 :return False
-        shuju37 =min (linshi22.x ,dongxi33.x )
-        linshi36 =max (linshi22.x ,dongxi33.x )
-        if not shuju37 -0.1 <=b25.x <=linshi36 +0.1 :return False
-        if abs (b25.x -(linshi22.x +dongxi33.x )*0.5 )>a38 *0.75 :return False
-        if shuju23.y <linshi22.y -dongxi12 *0.12 or jieguo34.y <dongxi33.y -dongxi12 *0.12 :return False
-        if a17.y <linshi22.y -dongxi12 *0.08 or tmp28.y <dongxi33.y -dongxi12 *0.08 :return False
-        if abs (tmp21.x -b32.x )<tmp14 *0.15 or abs (shuju16.x -jieguo27.x )<tmp14 *0.2 :return False
-        return True
-    if abs (b18.y -linshi29.y )>dongxi12 *0.035 :
+    shoulder_centre =(left_shoulder.x +right_shoulder.x )*0.5
+    if strict :
+        eye_tilt ,shoulder_tilt ,hip_tilt =0.035 ,0.055 ,0.055
+        nose_margin ,nose_offset =0.05 ,0.28
+        knee_gap ,ankle_gap =0.3 ,0.4
+    else :
+        eye_tilt ,shoulder_tilt ,hip_tilt =0.09 ,0.14 ,0.14
+        nose_margin ,nose_offset =0.1 ,0.75
+        knee_gap ,ankle_gap =0.15 ,0.2
+    if abs (left_eye.y -right_eye.y )>body_height *eye_tilt :
         return False
-    if abs (linshi22.y -dongxi33.y )>dongxi12 *0.055 :
+    if abs (left_shoulder.y -right_shoulder.y )>body_height *shoulder_tilt :
         return False
-    if abs (jieguo20.y -a31.y )>dongxi12 *0.055 :
+    if abs (left_hip.y -right_hip.y )>body_height *hip_tilt :
         return False
-    shuju37 =min (linshi22.x ,dongxi33.x )
-    linshi36 =max (linshi22.x ,dongxi33.x )
-    if not shuju37 -0.05 <=b25.x <=linshi36 +0.05 :
+    if not min (left_shoulder.x ,right_shoulder.x )-nose_margin <=nose.x <=max (left_shoulder.x ,right_shoulder.x )+nose_margin :
         return False
-    tmp35 =(linshi22.x +dongxi33.x )*0.5
-    if abs (b25.x -tmp35 )>a38 *0.28 :
+    if abs (nose.x -shoulder_centre )>shoulder_width *nose_offset :
         return False
-    a24 =min (jieguo20.y ,a31.y )-dongxi12 *0.08
-    if shuju23.y <a24 or jieguo34.y <a24 :return False
-    if a17.y <linshi22.y -dongxi12 *0.02 or tmp28.y <dongxi33.y -dongxi12 *0.02 :
+    if abs (left_knee.x -right_knee.x )<hip_width *knee_gap or abs (left_ankle.x -right_ankle.x )<hip_width *ankle_gap :
         return False
-    if abs (tmp21.x -b32.x )<tmp14 *0.3 :
+    if not strict :
+        # Hands and elbows must not be lifted above the shoulders.
+        if left_wrist.y <left_shoulder.y -body_height *0.12 or right_wrist.y <right_shoulder.y -body_height *0.12 :
+            return False
+        return left_elbow.y >=left_shoulder.y -body_height *0.08 and right_elbow.y >=right_shoulder.y -body_height *0.08
+    # Strict: hands hang near the hips, elbows below the shoulders, and the
+    # body is not turned, judged by the depth difference between both sides.
+    wrist_limit =min (left_hip.y ,right_hip.y )-body_height *0.08
+    if left_wrist.y <wrist_limit or right_wrist.y <wrist_limit :
         return False
-    if abs (shuju16.x -jieguo27.x )<tmp14 *0.4 :
+    if left_elbow.y <left_shoulder.y -body_height *0.02 or right_elbow.y <right_shoulder.y -body_height *0.02 :
         return False
-    if abs (linshi22.z -dongxi33.z )>a38 *0.45 :
+    if abs (left_shoulder.z -right_shoulder.z )>shoulder_width *0.45 :
         return False
-    if abs (jieguo20.z -a31.z )>tmp14 *0.6 :
-        return False
-    return True
+    return abs (left_hip.z -right_hip.z )<=hip_width *0.6
 
 def _decode_image_bytes (image_bytes :bytes )->Any :
     import cv2 as b39
@@ -315,62 +297,8 @@ def _detect_pose_landmarks (decoded_image :Any )->list [Any ]:
         linshi43 =shuju44.detect (a45 )
     return linshi43.pose_landmarks
 
-def prepare_local_image (tmp1 :bytes )->bytes :
-    if not tmp1 :raise AvatarImageGenerationError ('Choose a PNG, JPG, or WebP image first.')
-    if len (tmp1 )>LOCAL_IMAGE_LIMIT_BYTES :raise AvatarImageGenerationError ('The local image is larger than 15 MB.')
-    if not (tmp1.startswith (b'\x89PNG\r\n\x1a\n')or tmp1.startswith (b'\xff\xd8\xff')or tmp1.startswith (b'RIFF')and tmp1 [8 :12 ]==b'WEBP'):
-        raise AvatarImageGenerationError ('The local file must be a PNG, JPG, or WebP image.')
-    try :tmp2 =_decode_image_bytes (tmp1 )
-    except Exception as tmp3:raise AvatarImageGenerationError ('The local image could not be read.')from tmp3
-    (tmp4 ,tmp5 )=tmp2.shape [:2 ]
-    if min (tmp4 ,tmp5 )<256 :raise AvatarImageGenerationError ('The local image is too small. Use at least 256 pixels on each side.')
-    if tmp4 *tmp5 >16000000 :raise AvatarImageGenerationError ('The local image has too many pixels. Use 16 megapixels or less.')
-    if tmp4 <tmp5 *1.05 :raise AvatarImageGenerationError ('Use a portrait image with the complete person visible.')
-    tmp6 =_detect_pose_landmarks (tmp2 )
-    if len (tmp6 )!=1 or not pose_is_front_full_body (tmp6 [0 ]):
-        raise AvatarImageGenerationError ('Use one front-facing full-body person with both hands and feet visible.')
-    import cv2 as tmp7
-    tmp8,tmp9 =tmp7.imencode ('.png',tmp2 )
-    if not tmp8 :raise AvatarImageGenerationError ('The local image could not be converted to PNG.')
-    return tmp9.tobytes ()
-
 def build_cartoon_reference_prompt (name :str )->str :
     return f'\nCreate one polished, stylized 3D cartoon character representing the public\npolitician named {name}. Preserve a recognizable but clearly illustrated\nlikeness based on their widely known public appearance. This must not look like\na photograph.\n\nComposition requirements for image-to-3D reconstruction:\n- exactly one person, centered, front-facing, and looking straight at the camera\n- full body visible from the top of the hair to the soles of both shoes\n- generous empty margin around the entire figure; nothing may touch the frame\n- neutral symmetrical A-pose: upright torso, arms lowered slightly away from the\n  body, elbows straight, hands and all fingers visible, legs straight, feet\n  parallel and shoulder-width apart\n- no crossed or overlapping limbs, no hand gestures, no props, no podium, no\n  furniture, no crowd, and no additional people\n- simple professional clothing associated with a parliament member, with clean\n  separated shapes and no logos, flags, badges, writing, or tiny patterns\n- detailed, clean facial features and hair; smooth animated-film character style\n- soft, even studio lighting, minimal ground shadow, solid light-gray background\n- no text, captions, borders, watermarks, split views, side views, or rear views\n\nUse a portrait canvas and make the character occupy about 82 percent of the\nimage height. Prioritize a clean silhouette and reconstruction-friendly geometry.\n'.strip ()
-
-def build_local_cartoon_prompt (name :str )->str :
-    return f'one full-body 3D cartoon, front view, neutral A pose, both arms straight down beside body, both hands at hip level, no gesture, legs straight and apart, head and shoes visible, looks like {name}, formal business suit, detailed face, centered, plain light gray background, portrait canvas'
-
-def build_local_photo_prompt (name :str )->str :
-    return f'3D cartoon version of the same person in the input image, {name}, keep the same face, hair, clothes and body shape, one full body, front view, neutral A pose, both arms down, hands and shoes visible, clean detailed face, plain light gray background'
-
-def build_ollama_name_prompt (name :str )->str :
-    tmp1 ='Return JSON only with key style. Pick exactly one value from this list: polished animated-film 3D cartoon, clean clay 3D cartoon, friendly game-avatar 3D cartoon. Add nothing else.'
-    tmp2 =_call_ollama_text_api (tmp1 ,json_mode =True )
-    tmp3 ={'polished animated-film 3D cartoon','clean clay 3D cartoon','friendly game-avatar 3D cartoon'}
-    try :tmp4 =str (json.loads (tmp2 ).get ('style','')).strip ().lower ()
-    except Exception :tmp4 =''
-    if tmp4 not in tmp3:tmp4 ='polished animated-film 3D cartoon'
-    return build_local_cartoon_prompt (name )+', '+tmp4
-
-def build_ollama_photo_prompt (name :str ,image_bytes :bytes )->str :
-    tmp1 ='Return only a short English description of the visible person for an image generator. Mention face shape, hair, skin tone, glasses if present, body shape and clothing colors. Do not guess identity, age, ethnicity, health, beliefs or personality. Do not describe the background.'
-    tmp2 =_call_ollama_text_api (tmp1 ,image_bytes )
-    tmp2 =' '.join (tmp2.split ())[:700 ]
-    return build_local_photo_prompt (name )+', visible details: '+tmp2
-
-def make_ollama_dialogue (name :str ,topic :str )->tuple [str ,str ]:
-    tmp1 =f'Return JSON only with keys left and right. Two fictional 3D avatars of the same character compare their renderings. Demo topic: {topic}. Each value must be one friendly first-person English sentence under 140 characters. Mention only colors, cartoon style, 3D shape or the demo scene. Never mention a real name, office, job, biography, personality, gesture or opinion. These are not real quotes.'
-    tmp2 =_call_ollama_text_api (tmp1 ,json_mode =True )
-    try :
-        tmp3 =json.loads (tmp2 )
-        tmp4 =tmp3 ['left'];tmp5 =tmp3 ['right']
-        if isinstance (tmp4 ,dict ):tmp4 ='My left cartoon uses '+' and '.join (str (x )for x in list (tmp4.values ())[:2 ])+'.'
-        if isinstance (tmp5 ,dict ):tmp5 ='My right cartoon uses '+' and '.join (str (x )for x in list (tmp5.values ())[:2 ])+'.'
-        tmp4 =' '.join (str (tmp4 ).split ())[:180 ]
-        tmp5 =' '.join (str (tmp5 ).split ())[:180 ]
-        if not tmp4 or not tmp5:raise ValueError ('empty')
-        return tmp4 ,tmp5
-    except Exception as tmp6:raise AvatarImageGenerationError ('Ollama Qwen did not return two valid dialogue lines.')from tmp6
 
 def _call_openai_image_api (prompt :str )->bytes :
     jieguo48 =os.getenv ('OPENAI_API_KEY','').strip ()
@@ -404,86 +332,130 @@ def _call_openai_image_api (prompt :str )->bytes :
         raise AvatarImageGenerationError ('The OpenAI image service did not return the requested PNG image.')
     return shuju51
 
-def _call_ollama_image_api (prompt :str ,image_bytes :bytes |None =None )->bytes :
-    tmp60 =OLLAMA_IMAGE_SIZE.split ('x')
-    tmp61 ={'model':OLLAMA_IMAGE_MODEL ,'prompt':prompt ,'width':int (tmp60 [0 ]),'height':int (tmp60 [1 ]),'steps':OLLAMA_IMAGE_STEPS ,'stream':False ,'keep_alive':0 }
-    if image_bytes :tmp61 ['images']=[base64.b64encode (image_bytes ).decode ('ascii')]
-    a61 =json.dumps (tmp61 ).encode ('utf-8')
-    b62 =UrlRequest (OLLAMA_IMAGE_API_URL ,data =a61 ,headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
+def _ollama_request (url :str ,body :dict [str ,Any ],limit :int ,what :str )->dict [str ,Any ]:
+    request =UrlRequest (url ,data =json.dumps (body ).encode ('utf-8'),headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
     try :
-        with urlopen (b62 ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as tmp63 :
-            tmp64 =tmp63.read (OPENAI_IMAGE_RESPONSE_LIMIT_BYTES +1 )
-    except HTTPError as tmp65 :
-        tmp66 =''
+        with urlopen (request ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as response :
+            payload =response.read (limit +1 )
+    except HTTPError as error :
+        detail =''
         try :
-            tmp66 =tmp65.read (4096 ).decode ('utf-8','replace')
-            tmp67 =json.loads (tmp66 )
-            if isinstance (tmp67 ,dict ):tmp66 =str (tmp67.get ('error','')).strip ()
+            detail =str (json.loads (error.read (4096 ).decode ('utf-8','replace')).get ('error','')).strip ()
         except Exception :
             pass
-        logger.warning ('Ollama image request returned HTTP %s: %s',tmp65.code ,tmp66 )
-        if tmp66 =='image generation models are not currently supported':
-            tmp66 ='Ollama '+tmp66 +'. Update Ollama and use a supported image model.'
-        elif tmp66 :tmp66 ='Ollama error: '+tmp66
-        else :tmp66 ='Ollama rejected the image request.'
-        raise AvatarImageGenerationError (tmp66 )from tmp65
-    except (URLError ,TimeoutError ,OSError )as tmp65 :
-        raise AvatarImageConfigurationError ('Ollama could not be reached. Start Ollama and pull the configured image model.')from tmp65
-    if len (tmp64 )>OPENAI_IMAGE_RESPONSE_LIMIT_BYTES :
-        raise AvatarImageGenerationError ('The Ollama image response was too large.')
+        logger.warning ('Ollama %s request returned HTTP %s: %s',what ,error.code ,detail )
+        if detail =='image generation models are not currently supported':
+            raise AvatarImageConfigurationError ('This Ollama version cannot generate images. Use Ollama 0.32.5.')from error
+        if 'not found'in detail :
+            raise AvatarImageConfigurationError (f'Ollama does not have {body ["model"]} yet. Run: ollama pull {body ["model"]}')from error
+        raise AvatarImageGenerationError (f'Ollama {what} error: {detail or error.code }')from error
+    except (URLError ,TimeoutError ,OSError )as error :
+        raise AvatarImageConfigurationError ('Ollama is not running. Start the Ollama app or run: ollama serve')from error
+    if len (payload )>limit :
+        raise AvatarImageGenerationError (f'The Ollama {what} response was too large.')
     try :
-        a66 =json.loads (tmp64 )
-        b67 =a66.get ('image','')
-        if not b67 and isinstance (a66.get ('images'),list )and a66 ['images']:b67 =a66 ['images'][0 ]
-        if not b67 and isinstance (a66.get ('data'),list )and a66 ['data']:b67 =a66 ['data'][0 ].get ('b64_json','')
-        if not isinstance (b67 ,str )or not b67 :raise ValueError ('Missing image')
-        tmp68 =base64.b64decode (b67 ,validate =True )
-    except (KeyError ,TypeError ,ValueError ,json.JSONDecodeError )as tmp65 :
-        raise AvatarImageGenerationError ('Ollama returned an invalid image response.')from tmp65
-    if not tmp68.startswith (b'\x89PNG\r\n\x1a\n'):
+        return json.loads (payload )
+    except json.JSONDecodeError as error :
+        raise AvatarImageGenerationError (f'Ollama returned an invalid {what} response.')from error
+
+def _call_ollama_image_api (prompt :str ,reference_png :bytes |None =None )->bytes :
+    """Generate one image with Flux. With reference_png Flux redraws that picture."""
+    width ,height =(int (part )for part in OLLAMA_IMAGE_SIZE.split ('x'))
+    # keep_alive 0 unloads Flux straight away so TripoSR gets the memory back.
+    body ={'model':OLLAMA_IMAGE_MODEL ,'prompt':prompt ,'width':width ,'height':height ,'steps':OLLAMA_IMAGE_STEPS ,'stream':False ,'keep_alive':0 }
+    if reference_png :
+        body ['images']=[base64.b64encode (reference_png ).decode ('ascii')]
+    result =_ollama_request (OLLAMA_IMAGE_API_URL ,body ,OPENAI_IMAGE_RESPONSE_LIMIT_BYTES ,'image')
+    try :
+        image =base64.b64decode (result ['image'],validate =True )
+    except (KeyError ,TypeError ,ValueError )as error :
+        raise AvatarImageGenerationError ('Ollama returned no image.')from error
+    if not image.startswith (b'\x89PNG\r\n\x1a\n'):
         raise AvatarImageGenerationError ('Ollama did not return a PNG image.')
-    return tmp68
+    return image
 
-def _call_ollama_text_api (prompt :str ,image_bytes :bytes |None =None ,json_mode :bool =False )->str :
-    tmp1 ={'model':OLLAMA_TEXT_MODEL ,'prompt':prompt ,'stream':False ,'think':False ,'keep_alive':0 ,'options':{'temperature':0.2 }}
-    if image_bytes :tmp1 ['images']=[base64.b64encode (image_bytes ).decode ('ascii')]
-    if json_mode :tmp1 ['format']='json'
-    tmp2 =UrlRequest (OLLAMA_TEXT_API_URL ,data =json.dumps (tmp1 ).encode ('utf-8'),headers ={'Content-Type':'application/json','Accept':'application/json'},method ='POST')
-    try :
-        with urlopen (tmp2 ,timeout =OLLAMA_IMAGE_TIMEOUT_SECONDS ,context =_SSL_CONTEXT )as tmp3:tmp4 =tmp3.read (2 *1024 *1024 )
-    except HTTPError as tmp5:
-        tmp6 =''
-        try :
-            tmp6 =tmp5.read (4096 ).decode ('utf-8','replace')
-            tmp7 =json.loads (tmp6 )
-            if isinstance (tmp7 ,dict ):tmp6 =str (tmp7.get ('error','')).strip ()
-        except Exception :pass
-        raise AvatarImageGenerationError ('Ollama Qwen error: '+(tmp6 or str (tmp5.code )))from tmp5
-    except (URLError ,TimeoutError ,OSError )as tmp5:
-        raise AvatarImageConfigurationError ('Ollama Qwen could not be reached. Start Ollama and pull '+OLLAMA_TEXT_MODEL+'.')from tmp5
-    try :
-        tmp8 =json.loads (tmp4 )
-        tmp9 =tmp8.get ('response','')
-        if not tmp9 and isinstance (tmp8.get ('message'),dict ):tmp9 =tmp8 ['message'].get ('content','')
-        if not isinstance (tmp9 ,str )or not tmp9.strip ():raise ValueError ('Missing text')
-    except (ValueError ,TypeError ,json.JSONDecodeError )as tmp5:raise AvatarImageGenerationError ('Ollama Qwen returned an invalid text response.')from tmp5
-    tmp9 =re.sub ('<think>.*?</think>','',tmp9 ,flags =re.DOTALL ).strip ()
-    return tmp9 [:2000 ]
+def _call_ollama_text_api (prompt :str ,image_png :bytes |None =None ,json_mode :bool =False )->str :
+    body ={'model':OLLAMA_TEXT_MODEL ,'prompt':prompt ,'stream':False ,'think':False ,'keep_alive':0 ,'options':{'temperature':0 }}
+    if image_png :
+        body ['images']=[base64.b64encode (image_png ).decode ('ascii')]
+    if json_mode :
+        body ['format']='json'
+    text =_ollama_request (OLLAMA_TEXT_API_URL ,body ,2 *1024 *1024 ,'text').get ('response','')
+    if not isinstance (text ,str )or not text.strip ():
+        raise AvatarImageGenerationError ('Qwen returned an empty answer.')
+    return re.sub ('<think>.*?</think>','',text ,flags =re.DOTALL ).strip ()
 
-def _call_local_image_api (prompt :str )->bytes :
-    tmp1 =MODEL_DIR /f'.local-image-{uuid4().hex}.png'
-    try :
-        make_image (prompt ,tmp1 ,LOCAL_IMAGE_MODEL ,LOCAL_IMAGE_DEVICE )
-        tmp2 =tmp1.read_bytes ()
-        if len (tmp2 )>OPENAI_IMAGE_RESPONSE_LIMIT_BYTES :raise AvatarImageGenerationError ('The local image response was too large.')
-        if not tmp2.startswith (b'\x89PNG\r\n\x1a\n'):raise AvatarImageGenerationError ('The local image model did not return a PNG image.')
-        return tmp2
-    except LocalWorkerError as tmp3:raise AvatarImageGenerationError (str (tmp3 ))from tmp3
-    except AvatarImageGenerationError:raise
-    except Exception as tmp3:raise AvatarImageGenerationError ('The local image result could not be read.')from tmp3
-    finally :tmp1.unlink (missing_ok =True )
+APPEARANCE_QUESTION ="""Look at the person in the image and answer in JSON. Only describe what is visible; never guess identity, age, ethnicity, health or opinions.
+{"bald_on_top": is the top of the head bald or mostly bald? true or false,
+ "hair_colour": colour of the visible hair, or "none",
+ "hair_length": "none" | "short" | "medium" | "long",
+ "glasses": true or false,
+ "facial_hair": "none" | "stubble" | "moustache" | "beard",
+ "jacket": colour word or "none",
+ "shirt": colour word,
+ "tie": colour word or "none",
+ "trousers": colour word,
+ "shoes": colour word}"""
 
-def _generated_reference_is_usable (image_bytes :bytes )->bool :
+def _clean_word (value :Any ,fallback :str ='')->str :
+    """Keep a short colour or style word from the model and drop anything else."""
+    text =re.sub ('[^a-zA-Z -]','',str (value or '')).strip ().lower ()
+    return ' '.join (text.split ()[:3 ])or fallback
+
+def describe_visible_appearance (photo_png :bytes )->dict [str ,Any ]:
+    """Ask Qwen to fill a fixed form about what the photo shows.
+
+    A small vision model is far more reliable answering fixed yes/no and
+    colour questions than writing free text, and the code then turns the
+    answers into a prompt it controls.
+    """
+    answer =_call_ollama_text_api (APPEARANCE_QUESTION ,photo_png ,json_mode =True )
+    try :
+        raw =json.loads (answer )
+    except json.JSONDecodeError as error :
+        raise AvatarImageGenerationError ('Qwen did not return valid JSON.')from error
+    if not isinstance (raw ,dict ):
+        raise AvatarImageGenerationError ('Qwen did not return a JSON object.')
+    return {
+    'bald_on_top':raw.get ('bald_on_top')is True ,
+    'hair_colour':_clean_word (raw.get ('hair_colour'),'none'),
+    'hair_length':_clean_word (raw.get ('hair_length'),'short'),
+    'glasses':raw.get ('glasses')is True ,
+    'facial_hair':_clean_word (raw.get ('facial_hair'),'none'),
+    'jacket':_clean_word (raw.get ('jacket'),'none'),
+    'shirt':_clean_word (raw.get ('shirt'),'white'),
+    'tie':_clean_word (raw.get ('tie'),'none'),
+    'trousers':_clean_word (raw.get ('trousers'),'dark'),
+    'shoes':_clean_word (raw.get ('shoes'),'black'),
+    }
+
+def appearance_phrase (traits :dict [str ,Any ])->str :
+    hair_colour =traits ['hair_colour']
+    if traits ['bald_on_top']:
+        hair ='bald on top'+(f' with short {hair_colour } hair on the sides'if hair_colour !='none'else '')
+    elif traits ['hair_length']=='none':
+        hair ='shaved head'
+    else :
+        hair =f'{traits ["hair_length"]} {hair_colour } hair'.replace (' none ',' ')
+    parts =[hair ,'wearing glasses'if traits ['glasses']else 'no glasses']
+    parts .append ('clean-shaven'if traits ['facial_hair']=='none'else traits ['facial_hair'])
+    clothes =[]
+    if traits ['jacket']!='none':
+        clothes .append (f'{traits ["jacket"]} suit jacket')
+    clothes .append (f'{traits ["shirt"]} shirt')
+    if traits ['tie']!='none':
+        clothes .append (f'{traits ["tie"]} tie')
+    clothes +=[f'{traits ["trousers"]} trousers',f'{traits ["shoes"]} shoes']
+    return ', '.join (parts )+', '+', '.join (clothes )
+
+def build_flux_photo_prompt (traits :dict [str ,Any ]|None )->str :
+    look =f' The person has: {appearance_phrase (traits )}.'if traits else ''
+    return ('Redraw the person in the input image as a polished 3D animated-film cartoon character.'
+            +look +
+            ' Keep the same face and body shape. One person, full body from head to shoes, front view, '
+            'neutral A-pose with both arms straight down, hands and shoes visible, plain light gray background.')
+
+def _generated_reference_is_usable (image_bytes :bytes ,strict :bool =True )->bool :
     try :
         linshi57 =_decode_image_bytes (image_bytes )
         (a59 ,b60 )=linshi57.shape [:2 ]
@@ -494,70 +466,10 @@ def _generated_reference_is_usable (image_bytes :bytes )->bool :
         if len (dongxi61 )!=1 :
             logger.info ('Rejected generated reference because it contains %d poses',len (dongxi61 ))
             return False
-        return pose_is_front_full_body (dongxi61 [0 ],True )
+        return pose_is_front_full_body (dongxi61 [0 ],strict )
     except Exception as shuju58 :
         logger.info ('Generated reference validation failed: %s',shuju58 )
         return False
-
-def generate_photo_cartoon_reference (name :str ,tmp1 :bytes ,output_filename :str )->Path :
-    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):raise ValueError ('output_filename must be a plain .png filename')
-    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
-    tmp2 =MODEL_DIR /f'.photo-input-{uuid4().hex}.png'
-    tmp2.write_bytes (tmp1 )
-    tmp3 :AvatarImageGenerationError |None =None
-    try :
-        for i in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
-            tmp4 =MODEL_DIR /f'.photo-cartoon-{uuid4().hex}.png'
-            try :
-                logger.info ('Making full-body cartoon from local photo (%d/%d)',i ,LOCAL_IMAGE_ATTEMPTS )
-                make_photo (build_local_photo_prompt (name ),tmp2 ,tmp4 ,LOCAL_IMAGE_MODEL ,LOCAL_IMAGE_DEVICE )
-                tmp5 =tmp4.read_bytes ()
-                if not tmp5.startswith (b'\x89PNG\r\n\x1a\n'):raise AvatarImageGenerationError ('The local photo cartoon model did not return a PNG image.')
-                if not _generated_reference_is_usable (tmp5 ):raise AvatarImageGenerationError ('The photo cartoon did not contain a usable front-facing full-body pose.')
-                tmp6 =MODEL_DIR /output_filename
-                tmp4.replace (tmp6 )
-                return tmp6
-            except LocalWorkerError as tmp7:
-                tmp3 =AvatarImageGenerationError (str (tmp7 ))
-                if'out of memory'in str (tmp7 ).lower ()or'missing'in str (tmp7 ).lower ():raise tmp3 from tmp7
-            except AvatarImageGenerationError as tmp7:tmp3 =tmp7
-            finally :tmp4.unlink (missing_ok =True )
-        raise AvatarImageGenerationError (str (tmp3 )if tmp3 else 'The local photo could not be changed into a full-body cartoon.')from tmp3
-    finally :tmp2.unlink (missing_ok =True )
-
-def generate_ollama_photo_cartoon_reference (name :str ,tmp1 :bytes ,output_filename :str )->Path :
-    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):raise ValueError ('output_filename must be a plain .png filename')
-    tmp2 =build_ollama_photo_prompt (name ,tmp1 )
-    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
-    tmp3 =MODEL_DIR /f'.ollama-photo-input-{uuid4().hex}.png'
-    tmp3.write_bytes (tmp1 )
-    tmp4 :AvatarImageGenerationError |None =None
-    tmp5 =True
-    try :
-        for i in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
-            tmp6 =MODEL_DIR /f'.ollama-photo-cartoon-{uuid4().hex}.png'
-            try :
-                logger.info ('Making full-body cartoon from photo with Ollama/Qwen (%d/%d)',i ,LOCAL_IMAGE_ATTEMPTS )
-                if tmp5 :
-                    try :tmp6.write_bytes (_call_ollama_image_api (tmp2 ,tmp1 ))
-                    except AvatarImageGenerationError as tmp7:
-                        logger.warning ('Ollama image model failed, using local SD fallback: %s',tmp7 )
-                        tmp5 =False
-                        make_photo (tmp2 ,tmp3 ,tmp6 ,LOCAL_IMAGE_MODEL ,LOCAL_IMAGE_DEVICE )
-                else :make_photo (tmp2 ,tmp3 ,tmp6 ,LOCAL_IMAGE_MODEL ,LOCAL_IMAGE_DEVICE )
-                tmp8 =tmp6.read_bytes ()
-                if not tmp8.startswith (b'\x89PNG\r\n\x1a\n'):raise AvatarImageGenerationError ('The Ollama photo cartoon did not return a PNG image.')
-                if not _generated_reference_is_usable (tmp8 ):raise AvatarImageGenerationError ('The Ollama photo cartoon did not contain a usable front-facing full-body pose.')
-                tmp9 =MODEL_DIR /output_filename
-                tmp6.replace (tmp9 )
-                return tmp9
-            except LocalWorkerError as tmp7:
-                tmp4 =AvatarImageGenerationError (str (tmp7 ))
-                if'out of memory'in str (tmp7 ).lower ()or'missing'in str (tmp7 ).lower ():raise tmp4 from tmp7
-            except AvatarImageGenerationError as tmp7:tmp4 =tmp7
-            finally :tmp6.unlink (missing_ok =True )
-        raise AvatarImageGenerationError (str (tmp4 )if tmp4 else 'Ollama could not make a usable full-body cartoon from the photo.')from tmp4
-    finally :tmp3.unlink (missing_ok =True )
 
 def generate_cartoon_reference_image (name :str ,output_filename :str ,provider :str ='openai')->Path :
     tmpmeiyong =0
@@ -565,29 +477,18 @@ def generate_cartoon_reference_image (name :str ,output_filename :str ,provider 
         tmpmeiyong +=tmpx
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
         raise ValueError ('output_filename must be a plain .png filename')
-    b67 =build_local_cartoon_prompt (name )if provider =='local'else (build_ollama_name_prompt (name )if provider =='ollama'else build_cartoon_reference_prompt (name ))
+    b67 =build_cartoon_reference_prompt (name )
     a66 :AvatarImageGenerationError |None =None
-    tmp69 =OLLAMA_IMAGE_MODEL if provider =='ollama'else (LOCAL_IMAGE_MODEL if provider =='local'else OPENAI_IMAGE_MODEL )
-    tmp70 =LOCAL_IMAGE_ATTEMPTS if provider in {'local','ollama'}else OPENAI_IMAGE_ATTEMPTS
-    tmp71 =True
-    for jieguo62 in range (1 ,tmp70 +1 ):
-        logger.info ('Generating cartoon reference with %s (%d/%d)',tmp69 ,jieguo62 ,tmp70 )
+    tmp69 =OLLAMA_IMAGE_MODEL if provider =='ollama'else OPENAI_IMAGE_MODEL
+    for jieguo62 in range (1 ,OPENAI_IMAGE_ATTEMPTS +1 ):
+        logger.info ('Generating cartoon reference with %s (%d/%d)',tmp69 ,jieguo62 ,OPENAI_IMAGE_ATTEMPTS )
         try :
-            if provider =='ollama':
-                if tmp71 :
-                    try :shuju65 =_call_ollama_image_api (b67 )
-                    except AvatarImageGenerationError as tmp72:
-                        logger.warning ('Ollama image model failed, using local SD fallback: %s',tmp72 )
-                        tmp71 =False
-                        shuju65 =_call_local_image_api (b67 )
-                else :shuju65 =_call_local_image_api (b67 )
-            else :shuju65 =_call_local_image_api (b67 )if provider =='local'else _call_openai_image_api (b67 )
+            shuju65 =_call_ollama_image_api (b67 )if provider =='ollama'else _call_openai_image_api (b67 )
         except AvatarImageConfigurationError :
             raise
         except AvatarImageGenerationError as tmp63 :
             a66 =tmp63
-            if provider =='ollama'and ('not currently supported'in str (tmp63 )or 'model requires'in str (tmp63 )):raise
-            if jieguo62 <tmp70 :
+            if jieguo62 <OPENAI_IMAGE_ATTEMPTS :
                 time.sleep (jieguo62 )
             continue
         if not _generated_reference_is_usable (shuju65 ):
@@ -846,38 +747,157 @@ def bake_front_projection_texture (source_glb_path :Path ,reference_image_path :
     _write_glb (output_glb_path ,linshi169 ,bytes (jieguo167 ))
     return output_glb_path
 
+def photo_model_filename (name :str ,photo_png :bytes ,provider :str ='local')->str :
+    """Cache key for a photo avatar: same name, same photo, same settings, same file."""
+    clean_name =normalize_name (name )
+    slug =unicodedata.normalize ('NFKD',clean_name ).encode ('ascii','ignore').decode ('ascii')
+    slug =re.sub ('[^a-zA-Z0-9]+','-',slug ).strip ('-').lower ()[:48 ]or 'avatar'
+    if provider =='ollama':
+        recipe =('ollama',OLLAMA_TEXT_MODEL ,OLLAMA_IMAGE_MODEL ,OLLAMA_IMAGE_SIZE ,str (OLLAMA_IMAGE_STEPS ))
+    else :
+        recipe =('local-sd',str (LOCAL_PHOTO_STRENGTH ))
+    settings =':'.join ((PIPELINE_VERSION ,'photo',*recipe ,str (MARCHING_CUBES_RESOLUTION ),clean_name.casefold ()))
+    digest =hashlib.sha256 (settings.encode ('utf-8')+b':'+photo_png ).hexdigest ()[:10 ]
+    suffix ='-ollama'if provider =='ollama'else ''
+    return f'{slug}-{PIPELINE_VERSION}-photo{suffix}-{digest}.glb'
+
+def prepare_uploaded_photo (photo :bytes )->bytes :
+    """Validate an uploaded photo and return it as PNG bytes."""
+    if not photo :
+        raise AvatarImageGenerationError ('Choose a PNG, JPG or WebP image first.')
+    if len (photo )>UPLOAD_LIMIT_BYTES :
+        raise AvatarImageGenerationError (f'The image is larger than {UPLOAD_LIMIT_BYTES //(1024 *1024 )} MB.')
+    is_png =photo.startswith (b'\x89PNG\r\n\x1a\n')
+    is_jpeg =photo.startswith (b'\xff\xd8\xff')
+    is_webp =photo.startswith (b'RIFF')and photo [8 :12 ]==b'WEBP'
+    if not (is_png or is_jpeg or is_webp ):
+        raise AvatarImageGenerationError ('The file must be a PNG, JPG or WebP image.')
+    try :
+        decoded =_decode_image_bytes (photo )
+    except Exception as error :
+        raise AvatarImageGenerationError ('The image could not be read.')from error
+    height ,width =decoded.shape [:2 ]
+    if min (height ,width )<256 :
+        raise AvatarImageGenerationError ('The image is too small. Use at least 256 pixels on each side.')
+    if height *width >16_000_000 :
+        raise AvatarImageGenerationError ('The image has too many pixels. Use 16 megapixels or less.')
+    if height <width *1.05 :
+        raise AvatarImageGenerationError ('Use a portrait image that shows the whole person.')
+    poses =_detect_pose_landmarks (decoded )
+    if len (poses )!=1 or not pose_is_front_full_body (poses [0 ]):
+        raise AvatarImageGenerationError ('Use a photo of one person facing the camera, head to shoes, arms hanging down, hands and feet visible.')
+    import cv2
+    encoded ,png =cv2.imencode ('.png',decoded )
+    if not encoded :
+        raise AvatarImageGenerationError ('The image could not be converted to PNG.')
+    return png.tobytes ()
+
+def build_photo_cartoon_prompt (name :str ,traits :dict [str ,Any ]|None =None )->str :
+    return (f'3D cartoon version of the same person in the input image, {name}, keep the same face, hair, clothes '
+            'and body shape, one full body, front view, neutral A pose, both arms down, hands and shoes visible, '
+            'clean detailed face, plain light gray background'+(', '+appearance_phrase (traits )if traits else ''))
+
+def generate_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str ,traits :dict [str ,Any ]|None =None )->Path :
+    """Turn the photo into a cartoon reference, retrying until the pose check passes."""
+    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
+        raise ValueError ('output_filename must be a plain .png filename')
+    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
+    photo_path =MODEL_DIR /f'.photo-{uuid4().hex}.png'
+    photo_path.write_bytes (photo_png )
+    base_seed =int (hashlib.sha256 (photo_png ).hexdigest ()[:8 ],16 )
+    last_error :Exception |None =None
+    try :
+        for attempt in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
+            candidate =MODEL_DIR /f'.photo-cartoon-{uuid4().hex}.png'
+            try :
+                logger.info ('Turning uploaded photo into a cartoon (%d/%d)',attempt ,LOCAL_IMAGE_ATTEMPTS )
+                run_photo_cartoon (photo_path ,candidate ,build_photo_cartoon_prompt (name ,traits ),models_dir =LOCAL_MODELS_DIR ,device =LOCAL_IMAGE_DEVICE ,strength =LOCAL_PHOTO_STRENGTH ,seed =base_seed +attempt )
+                if _generated_reference_is_usable (candidate.read_bytes (),strict =False ):
+                    final_path =MODEL_DIR /output_filename
+                    candidate.replace (final_path )
+                    return final_path
+                last_error =AvatarImageGenerationError ('The cartoon lost the front full-body pose. Try a photo with a plainer background.')
+            except ResultFlagged :
+                logger.info ('Safety checker rejected cartoon attempt %d, trying another seed',attempt )
+                last_error =AvatarImageGenerationError ('The image model kept flagging the cartoon. Try another photo.')
+            except LocalWorkerError as error :
+                # Missing models or memory problems will not fix themselves on a retry.
+                raise AvatarImageGenerationError (str (error ))from error
+            finally :
+                candidate.unlink (missing_ok =True )
+        raise AvatarImageGenerationError (str (last_error ))
+    finally :
+        photo_path.unlink (missing_ok =True )
+
+def generate_ollama_photo_cartoon (name :str ,photo_png :bytes ,output_filename :str )->tuple [Path ,str ,str ]:
+    """Qwen reads the photo, Flux redraws it. Returns (image, model used, notice).
+
+    When Flux cannot run (Ollama missing, wrong version, model not pulled)
+    local Stable Diffusion takes over, and the notice says so, so the user
+    always knows which model made the picture.
+    """
+    if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.png'):
+        raise ValueError ('output_filename must be a plain .png filename')
+    traits :dict [str ,Any ]|None =None
+    try :
+        traits =describe_visible_appearance (photo_png )
+        logger.info ('Qwen sees: %s',appearance_phrase (traits ))
+    except (AvatarImageConfigurationError ,AvatarImageGenerationError )as error :
+        logger.warning ('Qwen could not describe the photo: %s',error )
+    prompt =build_flux_photo_prompt (traits )
+    last_error :Exception |None =None
+    for attempt in range (1 ,LOCAL_IMAGE_ATTEMPTS +1 ):
+        logger.info ('Redrawing uploaded photo with %s (%d/%d)',OLLAMA_IMAGE_MODEL ,attempt ,LOCAL_IMAGE_ATTEMPTS )
+        try :
+            cartoon =_call_ollama_image_api (prompt ,photo_png )
+        except AvatarImageConfigurationError as error :
+            logger.warning ('Flux is not available, using local Stable Diffusion: %s',error )
+            path =generate_photo_cartoon (name ,photo_png ,output_filename ,traits )
+            return path ,'Stable Diffusion 1.5 img2img',f'Flux was not available, so local Stable Diffusion made the cartoon. Reason: {error }'
+        except AvatarImageGenerationError as error :
+            last_error =error
+            continue
+        if not _generated_reference_is_usable (cartoon ,strict =False ):
+            last_error =AvatarImageGenerationError ('Flux lost the front full-body pose. Try a photo with a plainer background.')
+            continue
+        final_path =MODEL_DIR /output_filename
+        temporary =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.tmp'
+        temporary.write_bytes (cartoon )
+        temporary.replace (final_path )
+        model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if traits else OLLAMA_IMAGE_MODEL
+        notice ='' if traits else 'Qwen could not read the photo, so Flux worked from the image alone.'
+        return final_path ,model ,notice
+    raise AvatarImageGenerationError (str (last_error )if last_error else 'Flux could not redraw the photo.')
+
 def generate_3d_local (reference_image_path :Path ,output_filename :str )->Path :
-    tmpmeiyong =0
-    for tmpx in range (1 ):
-        tmpmeiyong +=tmpx
     if Path (output_filename ).name !=output_filename or not output_filename.endswith ('.glb'):
         raise ValueError ('output_filename must be a plain .glb filename')
     reference_image_path =Path (reference_image_path )
     if not reference_image_path.is_file ():
         raise AvatarGenerationError ('The generated reference image is missing.')
-    logger.info ('Running local TripoSR on %s',LOCAL_3D_DEVICE )
-    jieguo216 =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.tmp'
-    tmp209 =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.raw.glb'
-    tmp208 =MODEL_DIR /f'.{output_filename}.{uuid4().hex}.processed.png'
+    logger.info ('Running local TripoSR on %s at resolution %d',LOCAL_3D_DEVICE ,MARCHING_CUBES_RESOLUTION )
+    MODEL_DIR.mkdir (parents =True ,exist_ok =True )
+    job =uuid4 ().hex
+    raw_model =MODEL_DIR /f'.{output_filename}.{job}.raw.glb'
+    processed_image =MODEL_DIR /f'.{output_filename}.{job}.processed.png'
+    textured_model =MODEL_DIR /f'.{output_filename}.{job}.tmp'
     try :
-        make_3d (reference_image_path ,tmp209 ,TRIPOSR_PATH ,MARCHING_CUBES_RESOLUTION ,FOREGROUND_RATIO ,LOCAL_3D_DEVICE ,tmp208 )
-        MODEL_DIR.mkdir (parents =True ,exist_ok =True )
-        bake_front_projection_texture (tmp209 ,tmp208 ,jieguo216 )
-        if jieguo216.stat ().st_size ==0 :
-            raise AvatarGenerationError ('The reconstruction service returned an empty model.')
-        linshi211 =MODEL_DIR /output_filename
-        jieguo216.replace (linshi211 )
-        return linshi211
-    except LocalWorkerError as tmp210:
-        raise AvatarGenerationError (str (tmp210 ))from tmp210
+        run_triposr (reference_image_path ,raw_model ,processed_image ,models_dir =LOCAL_MODELS_DIR ,resolution =MARCHING_CUBES_RESOLUTION ,foreground_ratio =FOREGROUND_RATIO ,device =LOCAL_3D_DEVICE )
+        bake_front_projection_texture (raw_model ,processed_image ,textured_model )
+        if textured_model.stat ().st_size ==0 :
+            raise AvatarGenerationError ('The texture baker returned an empty model.')
+        final_model =MODEL_DIR /output_filename
+        textured_model.replace (final_model )
+        return final_model
+    except LocalWorkerError as error :
+        raise AvatarGenerationError (str (error ))from error
     except AvatarGenerationError :
         raise
-    except Exception as tmp210 :
-        raise AvatarGenerationError ('The local TripoSR reconstruction failed.')from tmp210
+    except Exception as error :
+        raise AvatarGenerationError ('The local 3D reconstruction failed.')from error
     finally :
-        jieguo216.unlink (missing_ok =True )
-        tmp209.unlink (missing_ok =True )
-        tmp208.unlink (missing_ok =True )
+        for leftover in (raw_model ,processed_image ,textured_model ):
+            leftover.unlink (missing_ok =True )
 
 def ensure_cached_model_texture (model_path :Path ,reference_image_path :Path )->bool :
     if glb_has_embedded_texture (model_path ):
@@ -906,13 +926,13 @@ def build_asset_url (request :Request ,filename :str )->str :
 def successful_response (request :Request ,name :str ,filename :str ,cached :bool ,provider :str ='openai')->AvatarResponse :
     shuju219 =reference_image_filename (filename )
     a220 =MODEL_DIR /shuju219
-    tmp220 =(OLLAMA_TEXT_MODEL +' + '+OLLAMA_IMAGE_MODEL +' / local SD fallback')if provider in {'ollama','upload-ollama'}else ('local photo cartoon'if provider =='upload'else (LOCAL_IMAGE_MODEL if provider =='local'else OPENAI_IMAGE_MODEL ))
+    tmp220 =OLLAMA_IMAGE_MODEL if provider =='ollama'else OPENAI_IMAGE_MODEL
     return AvatarResponse (name =name ,status ='success',message ='Model loaded from cache.'if cached else 'Model generated successfully.',model_url =build_asset_url (request ,filename ),reference_image_url =build_asset_url (request ,shuju219 )if a220.is_file ()and a220.stat ().st_size >0 else '',cached =cached ,provider =provider ,image_model =tmp220 )
 
 def _provider (provider :str )->str :
     tmp221 =provider.strip ().lower ()
-    if tmp221 not in {'openai','ollama','local'}:
-        raise HTTPException (status_code =422 ,detail ='provider must be openai, ollama, or local')
+    if tmp221 not in {'openai','ollama'}:
+        raise HTTPException (status_code =422 ,detail ='provider must be openai or ollama')
     return tmp221
 
 def _valid_name (name :str )->str :
@@ -928,7 +948,7 @@ def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->A
     shuju226 =reference_image_filename (dongxi222 )
     jieguo223 =MODEL_DIR /dongxi222
     b228 =MODEL_DIR /shuju226
-    tmp224 =(OLLAMA_TEXT_MODEL +' + '+OLLAMA_IMAGE_MODEL +' / local SD fallback')if tmp223 =='ollama'else (LOCAL_IMAGE_MODEL if tmp223 =='local'else OPENAI_IMAGE_MODEL )
+    tmp224 =OLLAMA_IMAGE_MODEL if tmp223 =='ollama'else OPENAI_IMAGE_MODEL
     with _generation_lock (dongxi222 ):
         if not force and jieguo223.is_file ()and jieguo223.stat ().st_size >0 :
             try :
@@ -945,16 +965,16 @@ def _create_avatar (request :Request ,name :str ,force :bool ,provider :str )->A
             generate_3d_local (b228 ,dongxi222 )
         except AvatarImageConfigurationError as b221 :
             logger.error ('AI reference generation is not configured for %s: %s',linshi225 ,b221 )
-            if tmp223 =='ollama':tmp226 ='Start Ollama and pull '+OLLAMA_TEXT_MODEL +' and '+OLLAMA_IMAGE_MODEL+'.'
+            if tmp223 =='ollama':tmp226 =str (b221 )
             elif 'OPENAI_API_KEY'in str (b221 ):tmp226 ='Set OPENAI_API_KEY before starting the backend.'
             else :tmp226 ='OpenAI TLS certificate verification failed.'
             return AvatarResponse (name =linshi225 ,status ='error',message =tmp226 ,provider =tmp223 ,image_model =tmp224 )
         except AvatarImageGenerationError as tmp225 :
             logger.exception ('AI reference generation failed for %s with %s',linshi225 ,tmp223 )
             return AvatarResponse (name =linshi225 ,status ='error',message =str (tmp225 ),provider =tmp223 ,image_model =tmp224 )
-        except AvatarGenerationError as tmp225:
+        except AvatarGenerationError as reconstruction_error :
             logger.exception ('3D reconstruction failed for %s',linshi225 )
-            return AvatarResponse (name =linshi225 ,status ='error',message =str (tmp225 ),provider =tmp223 ,image_model =tmp224 )
+            return AvatarResponse (name =linshi225 ,status ='error',message =str (reconstruction_error ),provider =tmp223 ,image_model =tmp224 )
     return successful_response (request ,linshi225 ,dongxi222 ,False ,tmp223 )
 
 def _xtag (tmp1 :Any )->str :
@@ -1012,72 +1032,114 @@ def health ()->HealthResponse :
     return HealthResponse (status ='ok',service ='meta-avatar')
 
 @app.get ('/api/avatar',response_model =AvatarResponse )
-def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ),provider :str =Query (default ='local'))->AvatarResponse :
+def create_avatar (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ),provider :str =Query (default ='openai'))->AvatarResponse :
     tmpmeiyong =0
     for tmpx in range (1 ):
         tmpmeiyong +=tmpx
     return _create_avatar (request ,name ,force ,provider )
 
+async def _read_upload (image :UploadFile )->bytes :
+    try :
+        return await image.read (UPLOAD_LIMIT_BYTES +1 )
+    finally :
+        await image.close ()
+
+def _create_photo_avatar (request :Request ,clean_name :str ,photo_png :bytes ,provider :str ,force :bool )->AvatarResponse :
+    label ='photo-ollama'if provider =='ollama'else 'photo'
+    image_model =f'{OLLAMA_TEXT_MODEL} + {OLLAMA_IMAGE_MODEL}'if provider =='ollama'else 'Stable Diffusion 1.5 img2img'
+    filename =photo_model_filename (clean_name ,photo_png ,provider )
+    model_path =MODEL_DIR /filename
+    reference_path =MODEL_DIR /reference_image_filename (filename )
+    notice =''
+    with _generation_lock (filename ):
+        cached =not force and model_path.is_file ()and model_path.stat ().st_size >0 and reference_path.is_file ()
+        if cached :
+            logger.info ('Serving cached %s avatar for %s',label ,clean_name )
+        else :
+            try :
+                if provider =='ollama':
+                    _ ,image_model ,notice =generate_ollama_photo_cartoon (clean_name ,photo_png ,reference_path.name )
+                else :
+                    generate_photo_cartoon (clean_name ,photo_png ,reference_path.name )
+                generate_3d_local (reference_path ,filename )
+            except (AvatarImageGenerationError ,AvatarGenerationError )as error :
+                logger.exception ('Photo avatar failed for %s with %s',clean_name ,provider )
+                return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider =label ,image_model =image_model )
+    response =successful_response (request ,clean_name ,filename ,cached ,label )
+    return response.model_copy (update ={'image_model':image_model ,'notice':notice })
+
 @app.post ('/api/avatar-from-image',response_model =AvatarResponse )
 async def avatar_from_image (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ),provider :str =Form (default ='local'))->AvatarResponse :
-    tmp1 =_valid_name (name )
-    tmp20 =provider.strip ().lower ()
-    if tmp20 not in {'local','ollama'}:
+    clean_name =_valid_name (name )
+    provider =provider.strip ().lower ()
+    if provider not in {'local','ollama'}:
         await image.close ()
-        return AvatarResponse (name =tmp1 ,status ='error',message ='Photo provider must be local or ollama.',provider ='upload')
-    tmp21 ='upload-ollama'if tmp20 =='ollama'else 'upload'
-    tmp22 =(OLLAMA_TEXT_MODEL +' + '+OLLAMA_IMAGE_MODEL +' / local SD fallback')if tmp20 =='ollama'else 'local photo cartoon'
-    tmp2 =(image.content_type or '').lower ()
-    if tmp2 not in {'image/png','image/jpeg','image/jpg','image/webp'}:
-        await image.close ()
-        return AvatarResponse (name =tmp1 ,status ='error',message ='Choose a PNG, JPG, or WebP image.',provider =tmp21 ,image_model =tmp22 )
-    try :tmp3 =await image.read (LOCAL_IMAGE_LIMIT_BYTES +1 )
-    finally :await image.close ()
-    try :tmp4 =prepare_local_image (tmp3 )
-    except (AvatarImageGenerationError ,AvatarGenerationError )as tmp5:
-        return AvatarResponse (name =tmp1 ,status ='error',message =str (tmp5 ),provider =tmp21 ,image_model =tmp22 )
-    tmp6 =local_model_filename (tmp1 ,tmp4 ,tmp20 )
-    tmp7 =reference_image_filename (tmp6 )
-    tmp8 =MODEL_DIR /tmp6
-    tmp9 =MODEL_DIR /tmp7
-    with _generation_lock (tmp6 ):
-        if not force and tmp8.is_file ()and tmp8.stat ().st_size >0 and tmp9.is_file ()and tmp9.stat ().st_size >0:
-            return successful_response (request ,tmp1 ,tmp6 ,True ,tmp21 )
-        try :
-            tmp9 =generate_ollama_photo_cartoon_reference (tmp1 ,tmp4 ,tmp7 )if tmp20 =='ollama'else generate_photo_cartoon_reference (tmp1 ,tmp4 ,tmp7 )
-            generate_3d_local (tmp9 ,tmp6 )
-        except (AvatarImageGenerationError ,AvatarGenerationError )as tmp10:
-            logger.exception ('Photo cartoon or reconstruction failed for %s with %s',tmp1 ,tmp20 )
-            return AvatarResponse (name =tmp1 ,status ='error',message =str (tmp10 ),provider =tmp21 ,image_model =tmp22 )
-    return successful_response (request ,tmp1 ,tmp6 ,False ,tmp21 )
+        raise HTTPException (status_code =422 ,detail ='provider must be local or ollama')
+    try :
+        photo_png =prepare_uploaded_photo (await _read_upload (image ))
+    except AvatarImageGenerationError as error :
+        return AvatarResponse (name =clean_name ,status ='error',message =str (error ),provider ='photo')
+    return _create_photo_avatar (request ,clean_name ,photo_png ,provider ,force )
+
+@app.post ('/api/compare-photo',response_model =PhotoCompareResponse )
+async def compare_photo (request :Request ,name :str =Form (min_length =1 ,max_length =100 ),image :UploadFile =File (),force :bool =Form (default =False ))->PhotoCompareResponse :
+    """Same photo, two pipelines: local Stable Diffusion on the left, Qwen + Flux on the right.
+
+    The two run one after the other; Stable Diffusion and Flux together do
+    not fit in 16 GB next to Unity.
+    """
+    clean_name =_valid_name (name )
+    try :
+        photo_png =prepare_uploaded_photo (await _read_upload (image ))
+    except AvatarImageGenerationError as error :
+        failed =AvatarResponse (name =clean_name ,status ='error',message =str (error ))
+        return PhotoCompareResponse (name =clean_name ,status ='error',message =str (error ),left =failed ,right =failed )
+    left =_create_photo_avatar (request ,clean_name ,photo_png ,'local',force )
+    right =_create_photo_avatar (request ,clean_name ,photo_png ,'ollama',force )
+    both =left.status =='success'and right.status =='success'
+    return PhotoCompareResponse (name =clean_name ,status ='success'if both else 'error',message ='Both models are ready.'if both else 'One or both models failed. Check the two result messages.',left =left ,right =right )
+
+DIALOGUE_PROMPT ="""Two cartoon avatars stand side by side in a VR demo scene. The demo topic is: {topic}.
+Write one short, friendly first-person English line for each avatar, at most 140 characters each.
+They may welcome the audience, name the topic, say what the scene will be about, or mention their own cartoon look.
+They must not state any political opinion, claim, promise or quote, and must not speak as a real person.
+Return JSON: {{"left": "...", "right": "..."}}"""
 
 @app.get ('/api/dialogue',response_model =DialogueResponse )
-def dialogue (name :str =Query (min_length =1 ,max_length =100 ),topic :str =Query (default ='German parliament and public policy',min_length =1 ,max_length =200 ))->DialogueResponse :
-    tmp1 =_valid_name (name )
-    tmp2 =' '.join (topic.split ())
+def dialogue (topic :str =Query (default ='German parliament and public policy',min_length =1 ,max_length =200 ))->DialogueResponse :
+    """Two speech bubble lines for the comparison view, written by the local Qwen.
+
+    The avatars look like real politicians, so the lines are kept to
+    welcoming the audience and naming the topic. Qwen is told never to
+    voice an opinion or quote anyone.
+    """
+    topic =' '.join (topic.split ())
     try :
-        tmp3,tmp4 =make_ollama_dialogue (tmp1 ,tmp2 )
-        return DialogueResponse (status ='success',message ='Local Qwen dialogue is ready.',left =tmp3 ,right =tmp4 ,model =OLLAMA_TEXT_MODEL )
-    except (AvatarImageGenerationError ,AvatarGenerationError )as tmp5:
-        logger.exception ('Local Qwen dialogue failed for %s',tmp1 )
-        return DialogueResponse (status ='error',message =str (tmp5 ),model =OLLAMA_TEXT_MODEL )
+        answer =json.loads (_call_ollama_text_api (DIALOGUE_PROMPT.format (topic =topic ),json_mode =True ))
+        left =' '.join (str (answer ['left']).split ())[:180 ]
+        right =' '.join (str (answer ['right']).split ())[:180 ]
+        if not left or not right :
+            raise ValueError ('empty line')
+    except (AvatarImageConfigurationError ,AvatarImageGenerationError )as error :
+        return DialogueResponse (status ='error',message =str (error ),model =OLLAMA_TEXT_MODEL )
+    except (KeyError ,TypeError ,ValueError ,json.JSONDecodeError ):
+        return DialogueResponse (status ='error',message ='Qwen did not return two lines. Try again.',model =OLLAMA_TEXT_MODEL )
+    return DialogueResponse (status ='success',message ='Dialogue ready.',left =left ,right =right ,model =OLLAMA_TEXT_MODEL )
 
 @app.get ('/api/compare',response_model =CompareResponse )
-def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ),left :str =Query (default ='openai'))->CompareResponse :
+def compare (request :Request ,name :str =Query (min_length =1 ,max_length =100 ),force :bool =Query (default =False ))->CompareResponse :
     tmp1 =_valid_name (name )
-    tmp10 =_provider (left )
-    if tmp10 =='ollama':raise HTTPException (status_code =422 ,detail ='left provider must be openai or local')
     tmp2 :dict [str ,AvatarResponse ]={}
     def run (tmp3 :str )->None :
         try :tmp2 [tmp3]=_create_avatar (request ,tmp1 ,force ,tmp3 )
         except Exception as tmp4:
             logger.exception ('Comparison failed for %s with %s',tmp1 ,tmp3 )
             tmp2 [tmp3]=AvatarResponse (name =tmp1 ,status ='error',message =str (tmp4 ),provider =tmp3 )
-    tmp5 =threading.Thread (target =run ,args =(tmp10 ,))
+    tmp5 =threading.Thread (target =run ,args =('openai',))
     tmp6 =threading.Thread (target =run ,args =('ollama',))
     tmp5.start ();tmp6.start ();tmp5.join ();tmp6.join ()
-    tmp7 =tmp2 [tmp10 ].status =='success'and tmp2 ['ollama'].status =='success'
-    return CompareResponse (name =tmp1 ,status ='success'if tmp7 else 'error',message ='Both models are ready.'if tmp7 else 'One or both models failed. Check the two result messages.',openai =tmp2 [tmp10 ],ollama =tmp2 ['ollama'])
+    tmp7 =tmp2 ['openai'].status =='success'and tmp2 ['ollama'].status =='success'
+    return CompareResponse (name =tmp1 ,status ='success'if tmp7 else 'error',message ='Both models are ready.'if tmp7 else 'One or both models failed. Check the two result messages.',openai =tmp2 ['openai'],ollama =tmp2 ['ollama'])
 
 @app.post ('/api/batch',response_model =BatchResponse )
 def batch (data :BatchInput ,request :Request )->BatchResponse :
@@ -1115,7 +1177,7 @@ def communication():
 
 @app.get('/v1/documentation')
 def docs():
-    return {'annotator_name':'meta-avatar-duui','version':'2.6.0','implementation_lang':'Python','meta':{'models':[LOCAL_IMAGE_MODEL,OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL,OLLAMA_TEXT_MODEL],'reconstruction':HUGGING_FACE_SPACE },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
+    return {'annotator_name':'meta-avatar-duui','version':'2.3.0','implementation_lang':'Python','meta':{'models':[OPENAI_IMAGE_MODEL,OLLAMA_IMAGE_MODEL,OLLAMA_TEXT_MODEL],'reconstruction':'TripoSR (local)' },'parameters':{'name':'Politician name. The document text is used when empty.','force':'Regenerate cached output.','include_binary':'Store Base64 GLB and PNG data in the CAS.'}}
 
 @app.get('/v1/details/input_output')
 def inputOutput():
@@ -1128,10 +1190,10 @@ def process(data:TmpInput,request:Request):
     tmp230=normalize_name(data.name or data.text)
     if not tmp230:return TmpOutput(name='',status='error',message='The DUUI document text or name parameter must contain a politician name.')
     if not is_plausible_person_name(tmp230):return TmpOutput(name=tmp230,status='error',message='The politician name contains invalid characters.')
-    tmp231=_create_avatar(request,tmp230,data.force,'local')
+    tmp231=_create_avatar(request,tmp230,data.force,'openai')
     tmp232=TmpOutput(**tmp231.model_dump())
     if tmp231.status=='success'and data.include_binary:
-        tmp233=MODEL_DIR/model_filename(tmp230,'local')
+        tmp233=MODEL_DIR/model_filename(tmp230)
         tmp234=MODEL_DIR/reference_image_filename(tmp233.name)
         if tmp233.is_file():tmp232.model_data=base64.b64encode(tmp233.read_bytes()).decode('ascii')
         if tmp234.is_file():tmp232.reference_image_data=base64.b64encode(tmp234.read_bytes()).decode('ascii')

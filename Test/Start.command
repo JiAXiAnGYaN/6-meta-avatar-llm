@@ -1,6 +1,8 @@
 #!/bin/zsh
+# Double-click to open the Meta Avatar launcher on macOS.
 cd "$(dirname "$0")"
-if [ -x /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 ];then
- exec /usr/bin/arch -arm64 /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 launcher.py
-fi
+for version in 3.12 3.11 3.10; do
+ python="/Library/Frameworks/Python.framework/Versions/$version/bin/python3"
+ if [ -x "$python" ]; then exec /usr/bin/arch -arm64 "$python" launcher.py; fi
+done
 exec /usr/bin/python3 launcher.py

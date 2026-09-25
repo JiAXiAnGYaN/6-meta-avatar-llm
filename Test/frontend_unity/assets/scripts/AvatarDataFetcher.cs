@@ -19,6 +19,7 @@ public class Data{
  public bool cached;
  public string provider;
  public string image_model;
+ public string notice;
 }
 [Serializable]
 public class CompareData{
@@ -27,17 +28,8 @@ public class CompareData{
  public string message;
  public Data openai;
  public Data ollama;
-}
-[Serializable]
-public class MembersData{
- public int period;
- public int total;
- public int start;
- public string[] names;
-}
-[Serializable]
-public class ErrorData{
- public string detail;
+ public Data left;
+ public Data right;
 }
 [Serializable]
 public class DialogueData{
@@ -46,6 +38,13 @@ public class DialogueData{
  public string left;
  public string right;
  public string model;
+}
+[Serializable]
+public class MembersData{
+ public int period;
+ public int total;
+ public int start;
+ public string[] names;
 }
 public class AvatarDataFetcher:MonoBehaviour{
  public TMP_InputField nameInput;
@@ -63,6 +62,14 @@ public class AvatarDataFetcher:MonoBehaviour{
  Camera tmp22;
  int tmp23=-1;
  GameObject tmp40;
+ bool walking;
+ TMP_InputField photoPathInput;
+ bool dialoguePanelOpen;
+ bool bubblesVisible;
+ string leftLine="";
+ string rightLine="";
+ string dialogueTopic="German parliament and public policy";
+ const long PhotoLimitBytes=15L*1024*1024;
  bool tmp41;
  bool tmp42;
  string[] tmp43=Array.Empty<string>();
@@ -74,37 +81,35 @@ public class AvatarDataFetcher:MonoBehaviour{
  bool tmp49;
  bool tmp50;
  int tmp51;
- TMP_InputField tmp52;
- bool tmp53;
- string tmp54="Hello from the GPT model.";
- string tmp55="Hello from the Ollama model.";
- bool tmp56;
- List<Button> tmp57=new List<Button>();
- string tmp58="";
- string tmp59="German parliament and public policy";
  void Start(){
   int tmp99=0;for(int j=0;j<1;j++){tmp99+=j;}
   Button tmp24=FindAnyObjectByType<Button>();
   if(tmp24!=null){
-   tmp57.Add(tmp24);TextMeshProUGUI tmp58=tmp24.GetComponentInChildren<TextMeshProUGUI>();if(tmp58!=null){tmp58.text="GPT Name to 3D";tmp58.fontSize=17;tmp58.alignment=TextAlignmentOptions.Center;}
+   TextMeshProUGUI gptLabel=tmp24.GetComponentInChildren<TextMeshProUGUI>();
+   if(gptLabel!=null){gptLabel.text="GPT Name 3D";gptLabel.fontSize=17;}
    makeButton(tmp24,"CompareButton","GPT / Ollama",new Vector2(460,-20),new Vector2(150,44),Compare);
-   makeButton(tmp24,"CompareLocalButton","Local / Ollama",new Vector2(620,-20),new Vector2(150,44),CompareLocal);
+   makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",new Vector2(620,-20),new Vector2(150,44),OllamaName);
    makeButton(tmp24,"BatchButton","German MPs",new Vector2(780,-20),new Vector2(150,44),Batch);
-   makeButton(tmp24,"BrowseImageButton","Browse",new Vector2(470,-74),new Vector2(90,44),BrowseImage);
-   makeButton(tmp24,"LocalImageButton","Local Photo 3D",new Vector2(570,-74),new Vector2(165,44),LocalImage);
-   makeButton(tmp24,"OllamaImageButton","Ollama Photo 3D",new Vector2(745,-74),new Vector2(175,44),OllamaImage);
-   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(100,38),()=>scene(0));
-   makeButton(tmp24,"ParliamentButton","Parliament",new Vector2(130,-128),new Vector2(170,38),()=>scene(1));
-   makeButton(tmp24,"PressButton","Press Room",new Vector2(310,-128),new Vector2(130,38),()=>scene(2));
-   makeButton(tmp24,"ElectionButton","Election",new Vector2(450,-128),new Vector2(150,38),()=>scene(3));
-   makeButton(tmp24,"LocalNameButton","Local Name 3D",new Vector2(610,-128),new Vector2(150,38),LocalName);
-   makeButton(tmp24,"OllamaNameButton","Ollama Name 3D",new Vector2(770,-128),new Vector2(160,38),OllamaName);
-   makeButton(tmp24,"DialogueButton","Dialogue",new Vector2(20,-178),new Vector2(130,42),Dialogue);
+   makeButton(tmp24,"BrowsePhotoButton","Browse",new Vector2(360,-74),new Vector2(80,44),BrowsePhoto);
+   makeButton(tmp24,"PhotoButton","Local Photo 3D",new Vector2(450,-74),new Vector2(150,44),()=>PhotoTo3D("local"));
+   makeButton(tmp24,"OllamaPhotoButton","Ollama Photo 3D",new Vector2(610,-74),new Vector2(160,44),()=>PhotoTo3D("ollama"));
+   makeButton(tmp24,"PhotoCompareButton","Photo Compare",new Vector2(780,-74),new Vector2(150,44),PhotoCompare);
+   makeButton(tmp24,"PlainButton","Plain",new Vector2(20,-128),new Vector2(110,38),()=>scene(0));
+   makeButton(tmp24,"ParliamentButton","Parliament",new Vector2(140,-128),new Vector2(170,38),()=>scene(1));
+   makeButton(tmp24,"PressButton","Press Room",new Vector2(320,-128),new Vector2(140,38),()=>scene(2));
+   makeButton(tmp24,"ElectionButton","Election",new Vector2(470,-128),new Vector2(150,38),()=>scene(3));
+   makeButton(tmp24,"WalkButton","Walk",new Vector2(630,-128),new Vector2(140,38),walk);
+   makeButton(tmp24,"DialogueButton","Dialogue",new Vector2(780,-128),new Vector2(150,38),ToggleDialogue);
   }
   if(nameInput!=null&&nameInput.placeholder is TMP_Text tmp25)tmp25.text="One name, or MP names separated by commas...";
-  if(nameInput!=null){tmp52=Instantiate(nameInput,nameInput.transform.parent);tmp52.name="Local Image Path";tmp52.text="";RectTransform tmp38=tmp52.GetComponent<RectTransform>();tmp38.anchoredPosition=new Vector2(20,-74);tmp38.sizeDelta=new Vector2(440,44);if(tmp52.placeholder is TMP_Text tmp39)tmp39.text="Front full-body PNG, JPG, or WebP path...";}
-  if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(160,-178);tmp37.sizeDelta=new Vector2(770,42);statusText.fontSize=18;}
-  scene(0);update("Ready. A name or photo first becomes a full-body cartoon, then the local backend builds the 3D model.");
+  if(nameInput!=null){
+   // A second copy of the name field holds the photo path, so it looks the same.
+   photoPathInput=Instantiate(nameInput,nameInput.transform.parent);photoPathInput.name="PhotoPathInput";photoPathInput.text="";
+   RectTransform photoRect=photoPathInput.GetComponent<RectTransform>();photoRect.anchoredPosition=new Vector2(20,-74);photoRect.sizeDelta=new Vector2(330,44);
+   if(photoPathInput.placeholder is TMP_Text photoHint)photoHint.text="Front full-body photo (PNG, JPG or WebP)...";
+  }
+  if(statusText!=null){RectTransform tmp37=statusText.GetComponent<RectTransform>();tmp37.anchoredPosition=new Vector2(20,-178);tmp37.sizeDelta=new Vector2(920,42);statusText.fontSize=20;}
+  scene(0);
  }
  void makeButton(Button tmp24,string tmp25,string tmp26,Vector2 tmp27,Vector2 tmp28,UnityEngine.Events.UnityAction tmp29){
   GameObject tmp30=new GameObject(tmp25,typeof(RectTransform),typeof(CanvasRenderer),typeof(Image),typeof(Button));
@@ -113,7 +118,6 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp31.anchorMin=new Vector2(0,1);tmp31.anchorMax=new Vector2(0,1);tmp31.pivot=new Vector2(0,1);tmp31.anchoredPosition=tmp27;tmp31.sizeDelta=tmp28;
   Image tmp32=tmp30.GetComponent<Image>();tmp32.sprite=tmp24.GetComponent<Image>().sprite;tmp32.type=Image.Type.Sliced;
   Button tmp33=tmp30.GetComponent<Button>();tmp33.targetGraphic=tmp32;tmp33.onClick.AddListener(tmp29);
-  tmp57.Add(tmp33);
   GameObject tmp34=new GameObject("Text (TMP)",typeof(RectTransform),typeof(CanvasRenderer),typeof(TextMeshProUGUI));
   tmp34.transform.SetParent(tmp30.transform,false);
   RectTransform tmp35=tmp34.GetComponent<RectTransform>();tmp35.anchorMin=Vector2.zero;tmp35.anchorMax=Vector2.one;tmp35.sizeDelta=Vector2.zero;
@@ -129,7 +133,16 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Use Generate MP List when you enter several names.");return;}
   string tmp5=backendUrl.TrimEnd('/');
   if(!good(tmp5)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(create(name,tmp5));
+  StartCoroutine(create(name,tmp5,"openai"));
+ }
+ public void OllamaName(){
+  if(tmp3){update("A model is already being generated. Please wait.");return;}
+  if(nameInput==null||statusText==null){Debug.LogError("UI is missing.");return;}
+  string name=nameInput.text.Trim();
+  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for Ollama Name 3D.");return;}
+  string url=backendUrl.TrimEnd('/');
+  if(!good(url)){update("Please configure a valid HTTP backend URL.");return;}
+  StartCoroutine(create(name,url,"ollama"));
  }
  public void Compare(){
   if(tmp3){update("A model is already being generated. Please wait.");return;}
@@ -138,29 +151,7 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one politician name for comparison.");return;}
   string tmp6=backendUrl.TrimEnd('/');
   if(!good(tmp6)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(compare(tmp5,root(tmp6),"openai"));
- }
- public void CompareLocal(){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||statusText==null){Debug.LogError("UI is missing.");return;}
-  string tmp5=nameInput.text.Trim();if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one person name for local comparison.");return;}
-  string tmp6=backendUrl.TrimEnd('/');if(!good(tmp6)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(compare(tmp5,root(tmp6),"local"));
- }
- public void LocalName(){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||statusText==null){Debug.LogError("UI is missing.");return;}
-  string tmp5=nameInput.text.Trim();
-  if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one person's name for Local Name to 3D.");return;}
-  string tmp6=backendUrl.TrimEnd('/');if(!good(tmp6)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(create(tmp5,tmp6,"local"));
- }
- public void OllamaName(){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||statusText==null){Debug.LogError("UI is missing.");return;}
-  string tmp5=nameInput.text.Trim();if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one person's name for Ollama Name 3D.");return;}
-  string tmp6=backendUrl.TrimEnd('/');if(!good(tmp6)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(create(tmp5,tmp6,"ollama"));
+  StartCoroutine(compare(tmp5,root(tmp6)));
  }
  public void Batch(){
   if(tmp3){update("A model is already being generated. Please wait.");return;}
@@ -171,118 +162,123 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(tmp43.Length==0&&!tmp42)StartCoroutine(members(root(tmp9)));
   else chooseTyped();
  }
- public void BrowseImage(){
+ public void BrowsePhoto(){
 #if UNITY_EDITOR
-  string tmp5=UnityEditor.EditorUtility.OpenFilePanelWithFilters("Choose a full-body image","",new[]{"Image files","png,jpg,jpeg,webp"});
-  if(!string.IsNullOrWhiteSpace(tmp5)&&tmp52!=null)tmp52.text=tmp5;
+  string path=UnityEditor.EditorUtility.OpenFilePanelWithFilters("Choose a front full-body photo","",new[]{"Images","png,jpg,jpeg,webp"});
+  if(!string.IsNullOrEmpty(path)&&photoPathInput!=null)photoPathInput.text=path;
 #else
-  update("Paste the complete PNG, JPG, or WebP file path into the image box.");
+  update("Paste the full path of the photo into the photo field.");
 #endif
  }
- public void LocalImage(){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||tmp52==null||statusText==null){Debug.LogError("Local image UI is missing.");return;}
-  string tmp5=nameInput.text.Trim();string tmp6=tmp52.text.Trim().Trim('"');
-  if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one person's name for the local image.");return;}
-  if(string.IsNullOrWhiteSpace(tmp6)||!File.Exists(tmp6)){update("Choose an existing local image file.");return;}
-  string tmp7=Path.GetExtension(tmp6).ToLowerInvariant();if(tmp7!=".png"&&tmp7!=".jpg"&&tmp7!=".jpeg"&&tmp7!=".webp"){update("Choose a PNG, JPG, or WebP image.");return;}
-  try{if(new FileInfo(tmp6).Length>15*1024*1024){update("The local image must be 15 MB or smaller.");return;}}
-  catch(Exception e){update("The local image could not be opened.");Debug.LogException(e);return;}
-  string tmp8=root(backendUrl.TrimEnd('/'));if(!good(tmp8)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(localImage(tmp5,tmp6,tmp8,"local"));
+ // Shared checks for every photo button; shows the reason and returns false when something is missing.
+ bool photoRequest(out string name,out string path,out string server){
+  name=path=server="";
+  if(tmp3){update("A model is already being generated. Please wait.");return false;}
+  if(nameInput==null||photoPathInput==null||statusText==null){Debug.LogError("Photo UI is missing.");return false;}
+  name=nameInput.text.Trim();
+  path=photoPathInput.text.Trim().Trim('"');
+  if(string.IsNullOrWhiteSpace(name)||name.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one name for the person in the photo.");return false;}
+  if(string.IsNullOrWhiteSpace(path)||!File.Exists(path)){update("Choose an existing photo first.");return false;}
+  string extension=Path.GetExtension(path).ToLowerInvariant();
+  if(extension!=".png"&&extension!=".jpg"&&extension!=".jpeg"&&extension!=".webp"){update("Choose a PNG, JPG or WebP photo.");return false;}
+  if(new FileInfo(path).Length>PhotoLimitBytes){update("The photo must be 15 MB or smaller.");return false;}
+  server=root(backendUrl.TrimEnd('/'));
+  if(!good(server)){update("Please configure a valid HTTP backend URL.");return false;}
+  return true;
  }
- public void OllamaImage(){
-  if(tmp3){update("A model is already being generated. Please wait.");return;}
-  if(nameInput==null||tmp52==null||statusText==null){Debug.LogError("Local image UI is missing.");return;}
-  string tmp5=nameInput.text.Trim();string tmp6=tmp52.text.Trim().Trim('"');
-  if(string.IsNullOrWhiteSpace(tmp5)||tmp5.IndexOfAny(new[]{',',';','\n','\r'})>=0){update("Enter one person's name for Ollama Photo 3D.");return;}
-  if(string.IsNullOrWhiteSpace(tmp6)||!File.Exists(tmp6)){update("Choose an existing local image file.");return;}
-  string tmp7=Path.GetExtension(tmp6).ToLowerInvariant();if(tmp7!=".png"&&tmp7!=".jpg"&&tmp7!=".jpeg"&&tmp7!=".webp"){update("Choose a PNG, JPG, or WebP image.");return;}
-  try{if(new FileInfo(tmp6).Length>15*1024*1024){update("The local image must be 15 MB or smaller.");return;}}catch(Exception e){update("The local image could not be opened.");Debug.LogException(e);return;}
-  string tmp8=root(backendUrl.TrimEnd('/'));if(!good(tmp8)){update("Please configure a valid HTTP backend URL.");return;}
-  StartCoroutine(localImage(tmp5,tmp6,tmp8,"ollama"));
+ List<IMultipartFormSection> photoForm(string name,string path,byte[] photo){
+  string extension=Path.GetExtension(path).ToLowerInvariant();
+  string mime=extension==".png"?"image/png":extension==".webp"?"image/webp":"image/jpeg";
+  return new List<IMultipartFormSection>{
+   new MultipartFormDataSection("name",name),
+   new MultipartFormFileSection("image",photo,Path.GetFileName(path),mime)
+  };
  }
- public void Dialogue(){
-  if(tmp1==null||tmp20==null){update("Load a two-model comparison before adding dialogue bubbles.");return;}
-  tmp53=!tmp53;
+ public void PhotoTo3D(string provider){
+  if(photoRequest(out string name,out string path,out string server))StartCoroutine(createFromPhoto(name,path,server,provider));
+ }
+ public void PhotoCompare(){
+  if(photoRequest(out string name,out string path,out string server))StartCoroutine(comparePhoto(name,path,server));
+ }
+ IEnumerator comparePhoto(string name,string path,string server){
+  tmp3=true;update("Same photo, two pipelines: Stable Diffusion first, then Qwen + Flux. This takes a few minutes...");
+  byte[] photo;
+  try{photo=File.ReadAllBytes(path);}
+  catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
+  using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/compare-photo",photoForm(name,path,photo))){
+   request.timeout=timeout;yield return request.SendWebRequest();
+   if(request.result!=UnityWebRequest.Result.Success){update($"Backend request failed (HTTP {request.responseCode}).");Debug.LogError(request.downloadHandler.text);tmp3=false;yield break;}
+   CompareData result;
+   try{result=JsonUtility.FromJson<CompareData>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid comparison response.");Debug.LogException(e);tmp3=false;yield break;}
+   if(result==null||result.status!="success"){
+    update("Local: "+(result?.left?.message??"failed")+" | Ollama: "+(result?.right?.message??"failed"));tmp3=false;yield break;
+   }
+   string notice=string.IsNullOrWhiteSpace(result.right.notice)?"":result.right.notice;
+   if(notice!="")Debug.LogWarning(notice);
+   update("Both 3D models are ready. Loading the split screen...");_=load2(result.left.model_url,result.right.model_url,result.left.image_model,result.right.image_model);
+  }
+ }
+ IEnumerator createFromPhoto(string name,string path,string server,string provider){
+  tmp3=true;update(provider=="ollama"?"Qwen is reading the photo and Flux is redrawing it, then the 3D model is reconstructed...":"Turning the photo into a cartoon, then reconstructing the 3D model...");
+  byte[] photo;
+  try{photo=File.ReadAllBytes(path);}
+  catch(Exception e){update("The photo could not be read.");Debug.LogException(e);tmp3=false;yield break;}
+  List<IMultipartFormSection> form=photoForm(name,path,photo);
+  form.Add(new MultipartFormDataSection("provider",provider));
+  using(UnityWebRequest request=UnityWebRequest.Post(server+"/api/avatar-from-image",form)){
+   request.timeout=timeout;yield return request.SendWebRequest();
+   if(request.result!=UnityWebRequest.Result.Success){
+    update($"Backend request failed (HTTP {request.responseCode}).");Debug.LogError(request.downloadHandler.text);tmp3=false;yield break;
+   }
+   Data result;
+   try{result=JsonUtility.FromJson<Data>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid response.");Debug.LogException(e);tmp3=false;yield break;}
+   if(result==null||result.status!="success"){update(string.IsNullOrWhiteSpace(result?.message)?"Photo avatar failed.":result.message);tmp3=false;yield break;}
+   if(!Uri.TryCreate(result.model_url,UriKind.Absolute,out Uri modelUrl)){update("The backend returned an invalid model URL.");tmp3=false;yield break;}
+   update(result.cached?"Using the cached photo model...":"Photo model generated. Loading it into the scene...");_=load(modelUrl.ToString(),result.notice);
+  }
  }
  bool good(string tmp5){return Uri.TryCreate(tmp5,UriKind.Absolute,out Uri tmp6)&&(tmp6.Scheme==Uri.UriSchemeHttp||tmp6.Scheme==Uri.UriSchemeHttps);}
  string root(string tmp5){int tmp6=tmp5.IndexOf("/api/",StringComparison.OrdinalIgnoreCase);return tmp6>=0?tmp5.Substring(0,tmp6):tmp5;}
- void busy(bool tmp5){
-  tmp3=tmp5;for(int i=0;i<tmp57.Count;i++)if(tmp57[i]!=null)tmp57[i].interactable=!tmp5;if(nameInput!=null)nameInput.interactable=!tmp5;if(tmp52!=null)tmp52.interactable=!tmp5;
- }
- string fail(UnityWebRequest tmp5,string tmp6){
-  string tmp7=tmp5.downloadHandler==null?"":tmp5.downloadHandler.text;
-  if(!string.IsNullOrWhiteSpace(tmp7)){try{Data tmp8=JsonUtility.FromJson<Data>(tmp7);if(!string.IsNullOrWhiteSpace(tmp8?.message))tmp7=tmp8.message;}catch{}try{ErrorData tmp9=JsonUtility.FromJson<ErrorData>(tmp7);if(!string.IsNullOrWhiteSpace(tmp9?.detail))tmp7=tmp9.detail;}catch{}}
-  if(string.IsNullOrWhiteSpace(tmp7))tmp7=tmp5.error;if(string.IsNullOrWhiteSpace(tmp7))tmp7="Unknown error";if(tmp7.Length>260)tmp7=tmp7.Substring(0,260);
-  return tmp6+(tmp5.responseCode>0?" (HTTP "+tmp5.responseCode+")":"")+": "+tmp7;
- }
- IEnumerator create(string name,string tmp5,string tmp6="openai"){
-  busy(true);update(tmp6=="local"?"Local Stable Diffusion is making the cartoon, then local 3D reconstruction will start...":(tmp6=="ollama"?"Local Qwen is preparing the prompt. Ollama Flux or the SD fallback will make the cartoon before local 3D...":"GPT is making a full-body cartoon. The local backend will then build the 3D model..."));
-  string url=$"{tmp5}?name={UnityWebRequest.EscapeURL(name)}&provider={UnityWebRequest.EscapeURL(tmp6)}";
+ IEnumerator create(string name,string tmp5,string provider){
+  tmp3=true;update(provider=="ollama"?"Flux is drawing a full-body cartoon, then the 3D model is reconstructed...":"Generating a full-body cartoon reference, then reconstructing the 3D model...");
+  string url=$"{tmp5}?name={UnityWebRequest.EscapeURL(name)}&provider={provider}";
   using(UnityWebRequest request=UnityWebRequest.Get(url)){
    request.timeout=timeout;yield return request.SendWebRequest();
    if(request.result!=UnityWebRequest.Result.Success){
     string detail=string.IsNullOrWhiteSpace(request.downloadHandler.text)?request.error:request.downloadHandler.text;
-    update(fail(request,tmp6=="local"?"Local Name failed":(tmp6=="ollama"?"Ollama Name failed":"GPT Name failed")));Debug.LogError(detail);busy(false);yield break;
+    update($"Backend request failed (HTTP {request.responseCode}).");Debug.LogError(detail);tmp3=false;yield break;
    }
    Data tmp8;
    try{tmp8=JsonUtility.FromJson<Data>(request.downloadHandler.text);}
-   catch(Exception e){update("The backend returned an invalid response.");Debug.LogException(e);busy(false);yield break;}
-   if(tmp8==null||tmp8.status!="success"){update(string.IsNullOrWhiteSpace(tmp8?.message)?"Avatar generation failed.":tmp8.message);busy(false);yield break;}
-   if(string.IsNullOrWhiteSpace(tmp8.model_url)||!Uri.TryCreate(tmp8.model_url,UriKind.Absolute,out Uri tmp7)){update("The backend returned an invalid model URL.");busy(false);yield break;}
+   catch(Exception e){update("The backend returned an invalid response.");Debug.LogException(e);tmp3=false;yield break;}
+   if(tmp8==null||tmp8.status!="success"){update(string.IsNullOrWhiteSpace(tmp8?.message)?"Avatar generation failed.":tmp8.message);tmp3=false;yield break;}
+   if(string.IsNullOrWhiteSpace(tmp8.model_url)||!Uri.TryCreate(tmp8.model_url,UriKind.Absolute,out Uri tmp7)){update("The backend returned an invalid model URL.");tmp3=false;yield break;}
    update(tmp8.cached?"Using the cached model...":"3D model generated. Loading it into the scene...");_=load(tmp7.ToString());
   }
  }
- IEnumerator localImage(string tmp5,string tmp6,string tmp7,string tmp15){
-  busy(true);update(tmp15=="ollama"?"Local Qwen is reading the photo, then Ollama Flux or the SD fallback will make the cartoon before 3D...":"Making a full-body cartoon from your photo, then building the local 3D model...");byte[] tmp8;
-  try{tmp8=File.ReadAllBytes(tmp6);}catch(Exception e){update("The local image could not be read.");Debug.LogException(e);busy(false);yield break;}
-  string tmp9=Path.GetExtension(tmp6).ToLowerInvariant();string tmp10=tmp9==".png"?"image/png":(tmp9==".webp"?"image/webp":"image/jpeg");
-  List<IMultipartFormSection> tmp11=new List<IMultipartFormSection>();tmp11.Add(new MultipartFormDataSection("name",tmp5));tmp11.Add(new MultipartFormDataSection("force","false"));tmp11.Add(new MultipartFormDataSection("provider",tmp15));tmp11.Add(new MultipartFormFileSection("image",tmp8,Path.GetFileName(tmp6),tmp10));
-  using(UnityWebRequest tmp12=UnityWebRequest.Post(tmp7+"/api/avatar-from-image",tmp11)){
-   tmp12.timeout=timeout;yield return tmp12.SendWebRequest();
-   if(tmp12.result!=UnityWebRequest.Result.Success){update(fail(tmp12,"Photo cartoon failed"));Debug.LogError(tmp12.downloadHandler.text);busy(false);yield break;}
-   Data tmp13;
-   try{tmp13=JsonUtility.FromJson<Data>(tmp12.downloadHandler.text);}catch(Exception e){update("The backend returned an invalid local image response.");Debug.LogException(e);busy(false);yield break;}
-   if(tmp13==null||tmp13.status!="success"){update(string.IsNullOrWhiteSpace(tmp13?.message)?"Photo cartoon or 3D generation failed.":tmp13.message);busy(false);yield break;}
-   if(string.IsNullOrWhiteSpace(tmp13.model_url)||!Uri.TryCreate(tmp13.model_url,UriKind.Absolute,out Uri tmp14)){update("The backend returned an invalid model URL.");busy(false);yield break;}
-   update(tmp13.cached?"Using the cached photo-cartoon model...":"Photo cartoon and 3D model are ready. Loading the model...");_=load(tmp14.ToString());
-  }
- }
- IEnumerator dialogue(){
-  if(string.IsNullOrWhiteSpace(tmp58)){update("Load a comparison before generating dialogue.");yield break;}
-  busy(true);update("Local Qwen is writing the two dialogue bubbles...");string tmp5=root(backendUrl.TrimEnd('/'))+"/api/dialogue?name="+UnityWebRequest.EscapeURL(tmp58)+"&topic="+UnityWebRequest.EscapeURL(tmp59);
-  using(UnityWebRequest tmp6=UnityWebRequest.Get(tmp5)){
-   tmp6.timeout=300;yield return tmp6.SendWebRequest();
-   if(tmp6.result!=UnityWebRequest.Result.Success){update(fail(tmp6,"Qwen dialogue failed"));busy(false);yield break;}
-   DialogueData tmp7;
-   try{tmp7=JsonUtility.FromJson<DialogueData>(tmp6.downloadHandler.text);}catch(Exception e){update("The backend returned invalid dialogue.");Debug.LogException(e);busy(false);yield break;}
-   if(tmp7==null||tmp7.status!="success"||string.IsNullOrWhiteSpace(tmp7.left)||string.IsNullOrWhiteSpace(tmp7.right)){update(string.IsNullOrWhiteSpace(tmp7?.message)?"Qwen dialogue failed.":tmp7.message);busy(false);yield break;}
-   tmp54=tmp7.left;tmp55=tmp7.right;tmp56=true;tmp53=false;update("Dialogue bubbles generated by "+tmp7.model+".");
-  }
-  busy(false);
- }
- IEnumerator compare(string name,string tmp5,string tmp11){
-  busy(true);update(tmp11=="local"?"Local SD and Ollama/Qwen are generating two models...":"GPT Image and Ollama/Qwen are generating two models...");
-  string tmp6=tmp5+"/api/compare?name="+UnityWebRequest.EscapeURL(name)+"&left="+UnityWebRequest.EscapeURL(tmp11);
+ IEnumerator compare(string name,string tmp5){
+  tmp3=true;update("GPT Image and Ollama are generating two models at the same time...");
+  string tmp6=tmp5+"/api/compare?name="+UnityWebRequest.EscapeURL(name);
   using(UnityWebRequest tmp7=UnityWebRequest.Get(tmp6)){
    tmp7.timeout=timeout;yield return tmp7.SendWebRequest();
-   if(tmp7.result!=UnityWebRequest.Result.Success){update(fail(tmp7,"Comparison failed"));Debug.LogError(tmp7.downloadHandler.text);busy(false);yield break;}
+   if(tmp7.result!=UnityWebRequest.Result.Success){update("Comparison request failed.");Debug.LogError(tmp7.downloadHandler.text);tmp3=false;yield break;}
    CompareData tmp8;
    try{tmp8=JsonUtility.FromJson<CompareData>(tmp7.downloadHandler.text);}
-   catch(Exception e){update("The backend returned an invalid comparison response.");Debug.LogException(e);busy(false);yield break;}
+   catch(Exception e){update("The backend returned an invalid comparison response.");Debug.LogException(e);tmp3=false;yield break;}
    if(tmp8==null||tmp8.status!="success"){
     string tmp9=tmp8?.openai?.message??"OpenAI failed";string tmp10=tmp8?.ollama?.message??"Ollama failed";
-    update((tmp11=="local"?"Local: ":"GPT: ")+tmp9+" Ollama: "+tmp10);busy(false);yield break;
+    update("GPT: "+tmp9+" Ollama: "+tmp10);tmp3=false;yield break;
    }
-   update("Both 3D models are ready. Loading the split screen...");_=load2(tmp8.openai.model_url,tmp8.ollama.model_url,tmp8.openai.image_model,tmp8.ollama.image_model,name,tmp11);
+   update("Both 3D models are ready. Loading the split screen...");_=load2(tmp8.openai.model_url,tmp8.ollama.model_url,tmp8.openai.image_model,tmp8.ollama.image_model);
   }
  }
  IEnumerator batch(List<string> tmp5,string tmp6){
-  busy(true);tmp49=true;tmp50=false;int tmp7=0;int tmp8=0;int tmp12=0;
+  tmp3=true;tmp49=true;tmp50=false;int tmp7=0;int tmp8=0;int tmp12=0;
   for(int i=0;i<tmp5.Count;i++){
    if(tmp50)break;
-   update($"German MP batch {i+1}/{tmp5.Count}: {tmp5[i]}");string tmp9=$"{tmp6}?name={UnityWebRequest.EscapeURL(tmp5[i])}&provider=local";
+   update($"German MP batch {i+1}/{tmp5.Count}: {tmp5[i]}");string tmp9=$"{tmp6}?name={UnityWebRequest.EscapeURL(tmp5[i])}";
    using(UnityWebRequest tmp10=UnityWebRequest.Get(tmp9)){
     tmp10.timeout=timeout;yield return tmp10.SendWebRequest();
     tmp12++;if(tmp10.result!=UnityWebRequest.Result.Success){tmp8++;Debug.LogError(tmp10.downloadHandler.text);continue;}
@@ -292,7 +288,7 @@ public class AvatarDataFetcher:MonoBehaviour{
   }
   if(tmp50)update($"Batch stopped after {tmp12}/{tmp5.Count}: {tmp7} succeeded and {tmp8} failed.");
   else update($"German MP batch finished: {tmp7} succeeded, {tmp8} failed. The GLB files are saved by the backend.");
-  busy(false);tmp49=false;tmp50=false;
+  tmp3=false;tmp49=false;tmp50=false;
  }
  IEnumerator members(string tmp5){
   tmp42=true;update("Loading the official German Bundestag member list...");
@@ -321,11 +317,64 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp41=false;StartCoroutine(batch(tmp5,backendUrl.TrimEnd('/')));
  }
  void all(){tmp47=false;tmp41=false;StartCoroutine(batch(new List<string>(tmp43),backendUrl.TrimEnd('/')));}
+ public void ToggleDialogue(){
+  if(tmp1==null||tmp20==null){update("Load a comparison first; the bubbles belong to the two avatars.");return;}
+  dialoguePanelOpen=!dialoguePanelOpen;
+ }
+ IEnumerator writeDialogue(){
+  string server=root(backendUrl.TrimEnd('/'));
+  tmp3=true;update("Qwen is writing the two speech bubbles...");
+  using(UnityWebRequest request=UnityWebRequest.Get(server+"/api/dialogue?topic="+UnityWebRequest.EscapeURL(dialogueTopic))){
+   request.timeout=300;yield return request.SendWebRequest();
+   tmp3=false;
+   if(request.result!=UnityWebRequest.Result.Success){update($"Dialogue request failed (HTTP {request.responseCode}).");yield break;}
+   DialogueData result;
+   try{result=JsonUtility.FromJson<DialogueData>(request.downloadHandler.text);}
+   catch(Exception e){update("The backend returned an invalid dialogue.");Debug.LogException(e);yield break;}
+   if(result==null||result.status!="success"){update(string.IsNullOrWhiteSpace(result?.message)?"Dialogue failed.":result.message);yield break;}
+   leftLine=result.left;rightLine=result.right;bubblesVisible=true;
+   update("Speech bubbles written by "+result.model+". You can still edit them in the Dialogue panel.");
+  }
+ }
+ void speechBubble(Rect box,string text,bool tailRight){
+  Color previous=GUI.color;GUI.color=new Color(1,1,1,.94f);
+  GUI.Box(box,"");
+  // Two small boxes under the bubble form the tail pointing at the avatar.
+  float tailX=tailRight?box.x+box.width*.68f:box.x+box.width*.32f;
+  GUI.Box(new Rect(tailX,box.y+box.height-5,22,22),"");GUI.Box(new Rect(tailX+7,box.y+box.height+17,13,13),"");
+  GUI.color=previous;
+  GUIStyle style=new GUIStyle(GUI.skin.label){alignment=TextAnchor.MiddleCenter,wordWrap=true,fontSize=16};
+  style.normal.textColor=Color.black;
+  GUI.Label(new Rect(box.x+12,box.y+10,box.width-24,box.height-20),string.IsNullOrWhiteSpace(text)?"...":text,style);
+ }
+ void dialogueGui(){
+  if(tmp1==null||tmp20==null)return;
+  if(bubblesVisible){
+   float width=Mathf.Min(330,Screen.width*.5f-45);
+   speechBubble(new Rect(20,240,width,95),leftLine,true);
+   speechBubble(new Rect(Screen.width*.5f+25,240,width,95),rightLine,false);
+  }
+  if(!dialoguePanelOpen)return;
+  float panelWidth=Mathf.Min(580,Screen.width-30);
+  Rect panel=new Rect((Screen.width-panelWidth)*.5f,Screen.height-315,panelWidth,300);
+  GUI.Box(panel,"");
+  GUILayout.BeginArea(new Rect(panel.x+14,panel.y+12,panel.width-28,panel.height-24));
+  GUILayout.Label("Speech bubbles for the two avatars");
+  GUILayout.Label("Topic for Qwen");
+  dialogueTopic=GUILayout.TextField(dialogueTopic,180);
+  GUI.enabled=!tmp3;
+  if(GUILayout.Button("Write with local Qwen"))StartCoroutine(writeDialogue());
+  GUI.enabled=true;
+  GUILayout.Label("Left avatar says");leftLine=GUILayout.TextArea(leftLine,180,GUILayout.Height(45));
+  GUILayout.Label("Right avatar says");rightLine=GUILayout.TextArea(rightLine,180,GUILayout.Height(45));
+  GUILayout.BeginHorizontal();
+  if(GUILayout.Button(bubblesVisible?"Hide bubbles":"Show bubbles"))bubblesVisible=!bubblesVisible;
+  if(GUILayout.Button("Close"))dialoguePanelOpen=false;
+  GUILayout.EndHorizontal();
+  GUILayout.EndArea();
+ }
  void OnGUI(){
-  if(tmp56&&tmp1!=null&&tmp20!=null){float tmp14=Mathf.Min(330,Screen.width*.5f-45);cloud(new Rect(20,220,tmp14,95),tmp54,true);cloud(new Rect(Screen.width*.5f+25,220,tmp14,95),tmp55,false);}
-  bool tmp58=GUI.enabled;GUI.enabled=!tmp3;
-  if(tmp53){float tmp14=Mathf.Min(580,Screen.width-30);Rect tmp15=new Rect((Screen.width-tmp14)*.5f,Screen.height-315,tmp14,300);GUI.Box(tmp15,"");GUILayout.BeginArea(new Rect(tmp15.x+14,tmp15.y+12,tmp15.width-28,tmp15.height-24));GUILayout.Label("Dialogue clouds for the two models");GUILayout.Label("Topic for local Qwen");tmp59=GUILayout.TextField(tmp59,180);GUILayout.Label("Left model says");tmp54=GUILayout.TextArea(tmp54,180,GUILayout.Height(55));GUILayout.Label("Right model says");tmp55=GUILayout.TextArea(tmp55,180,GUILayout.Height(55));if(GUILayout.Button("Generate with local Qwen"))StartCoroutine(dialogue());GUILayout.BeginHorizontal();if(GUILayout.Button("Show clouds")){tmp56=true;tmp53=false;}if(GUILayout.Button("Hide clouds"))tmp56=false;if(GUILayout.Button("Close"))tmp53=false;GUILayout.EndHorizontal();GUILayout.EndArea();}
-  GUI.enabled=tmp58;
+  dialogueGui();
   if(tmp49&&GUI.Button(new Rect(Screen.width-170,Screen.height-54,155,40),"Stop MP Batch")){tmp50=true;update("Stopping after the current MP finishes...");}
   if(!tmp41)return;
   float tmp5=Mathf.Min(560,Screen.width-30);float tmp6=Mathf.Max(300,Screen.height-150);Rect tmp7=new Rect(15,110,tmp5,tmp6);
@@ -343,13 +392,10 @@ public class AvatarDataFetcher:MonoBehaviour{
   if(!tmp47){
    GUILayout.BeginHorizontal();if(GUILayout.Button("Generate selected ("+picked()+")"))selected();if(GUILayout.Button("Generate all ("+tmp43.Length+")"))tmp47=true;GUILayout.EndHorizontal();
   }else{
-   GUILayout.Label("This can take many hours and use a lot of CPU time. Generate all "+tmp43.Length+" MPs?");
+   GUILayout.Label("This can use many paid API calls and take many hours. Generate all "+tmp43.Length+" MPs?");
    GUILayout.BeginHorizontal();if(GUILayout.Button("Yes, generate all"))all();if(GUILayout.Button("Cancel"))tmp47=false;GUILayout.EndHorizontal();
   }
   GUILayout.EndArea();
- }
- void cloud(Rect tmp5,string tmp6,bool tmp7){
-  Color tmp8=GUI.color;GUI.color=new Color(1,1,1,.94f);GUI.Box(tmp5,"");GUI.Box(new Rect(tmp5.x+35,tmp5.y-10,70,28),"");GUI.Box(new Rect(tmp5.x+tmp5.width-115,tmp5.y-8,80,26),"");float tmp9=tmp7?tmp5.x+tmp5.width*.68f:tmp5.x+tmp5.width*.32f;GUI.Box(new Rect(tmp9,tmp5.y+tmp5.height-5,22,22),"");GUI.Box(new Rect(tmp9+7,tmp5.y+tmp5.height+17,13,13),"");GUI.color=tmp8;GUIStyle tmp10=new GUIStyle(GUI.skin.label);tmp10.alignment=TextAnchor.MiddleCenter;tmp10.wordWrap=true;tmp10.fontSize=16;tmp10.normal.textColor=Color.black;GUI.Label(new Rect(tmp5.x+12,tmp5.y+10,tmp5.width-24,tmp5.height-20),string.IsNullOrWhiteSpace(tmp6)?"...":tmp6,tmp10);
  }
  void scene(int tmp5){
   tmp51=tmp5;if(tmp40!=null)Destroy(tmp40);tmp40=new GameObject("Simple Scene");Color tmp6=new Color(.45f,.46f,.48f);Color tmp7=new Color(.2f,.32f,.5f);
@@ -376,29 +422,33 @@ public class AvatarDataFetcher:MonoBehaviour{
  GameObject thing(PrimitiveType tmp5,string tmp6,Vector3 tmp7,Vector3 tmp8,Color tmp9){
   GameObject tmp10=GameObject.CreatePrimitive(tmp5);tmp10.name=tmp6;tmp10.transform.SetParent(tmp40.transform);tmp10.transform.position=tmp7;tmp10.transform.localScale=tmp8;Renderer tmp11=tmp10.GetComponent<Renderer>();if(tmp11!=null)tmp11.material.color=tmp9;return tmp10;
  }
- async Task load(string tmp8){
+ async Task load(string tmp8,string notice=""){
   GltfImport tmp9=new GltfImport(logger:new ConsoleLogger());GameObject tmp10=null;
   try{
    bool loaded=await tmp9.Load(tmp8);if(!loaded){update2("The generated GLB could not be downloaded.");return;}
    tmp10=new GameObject("Generated_Avatar");if(spawnPoint!=null)tmp10.transform.SetPositionAndRotation(spawnPoint.position,spawnPoint.rotation);
    bool ok=await tmp9.InstantiateMainSceneAsync(tmp10.transform);if(!ok||tmp4){update2("The generated GLB could not be added to the scene.");return;}
-   clear();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;place(tmp1);
-   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);update2("Ready — drag to rotate, scroll to zoom, press F to refocus.");
+   clear();tmp1=tmp10;tmp2=tmp9;tmp10=null;tmp9=null;place(tmp1);rig(tmp1);
+   if(get(tmp1,out Bounds tmp11))camera()?.Focus(tmp11);
+   // A fallback notice matters more than the controls hint, so it wins the status line.
+   if(!string.IsNullOrWhiteSpace(notice)){Debug.LogWarning(notice);update2("Note: "+notice);}
+   else update2("Ready — drag a body part to move it, drag the background to orbit, scroll to zoom, press F to refocus.");
   }catch(Exception e){update2("Unexpected error while loading the generated model.");Debug.LogException(e);}
-  finally{if(tmp10!=null)Destroy(tmp10);tmp9?.Dispose();if(!tmp4)busy(false);}
+  finally{if(tmp10!=null)Destroy(tmp10);tmp9?.Dispose();tmp3=false;}
  }
- async Task load2(string tmp5,string tmp6,string tmp7,string tmp8,string tmp17,string tmp18){
+ async Task load2(string tmp5,string tmp6,string tmp7,string tmp8){
   GltfImport tmp9=new GltfImport(logger:new ConsoleLogger());GltfImport tmp10=new GltfImport(logger:new ConsoleLogger());GameObject tmp11=null;GameObject tmp12=null;
   try{
    bool[] tmp13=await Task.WhenAll(tmp9.Load(tmp5),tmp10.Load(tmp6));if(!tmp13[0]||!tmp13[1]){update2("One of the comparison GLB files could not be downloaded.");return;}
-   tmp11=new GameObject("Left_Avatar");tmp12=new GameObject("Ollama_Avatar");
+   tmp11=new GameObject("GPT_Avatar");tmp12=new GameObject("Ollama_Avatar");
    bool[] tmp14=await Task.WhenAll(tmp9.InstantiateMainSceneAsync(tmp11.transform),tmp10.InstantiateMainSceneAsync(tmp12.transform));
    if(!tmp14[0]||!tmp14[1]||tmp4){update2("One comparison model could not be added to the scene.");return;}
-   clear();tmp1=tmp11;tmp2=tmp9;tmp20=tmp12;tmp21=tmp10;tmp11=null;tmp12=null;tmp9=null;tmp10=null;place(tmp1);place(tmp20);
-   if(get(tmp1,out Bounds tmp15)&&get(tmp20,out Bounds tmp16))split(tmp15,tmp16);tmp58=tmp17;tmp54="Hello, I am the "+(tmp18=="local"?"local SD":"GPT")+" version of "+tmp17+".";tmp55="Hello, I am the Ollama/Qwen version. Let us compare our appearance.";tmp56=true;
+   clear();tmp1=tmp11;tmp2=tmp9;tmp20=tmp12;tmp21=tmp10;tmp11=null;tmp12=null;tmp9=null;tmp10=null;place(tmp1);place(tmp20);rig(tmp1);rig(tmp20);
+   if(get(tmp1,out Bounds tmp15)&&get(tmp20,out Bounds tmp16))split(tmp15,tmp16);
+   leftLine="Hello! I was drawn by "+tmp7+".";rightLine="And I was drawn by "+tmp8+".";bubblesVisible=true;
    update2("Left: "+tmp7+" | Right: "+tmp8+". Drag or zoom inside either half.");
   }catch(Exception e){update2("Unexpected error while loading the comparison.");Debug.LogException(e);}
-  finally{if(tmp11!=null)Destroy(tmp11);if(tmp12!=null)Destroy(tmp12);tmp9?.Dispose();tmp10?.Dispose();if(!tmp4)busy(false);}
+  finally{if(tmp11!=null)Destroy(tmp11);if(tmp12!=null)Destroy(tmp12);tmp9?.Dispose();tmp10?.Dispose();tmp3=false;}
  }
  void split(Bounds tmp5,Bounds tmp6){
   AvatarOrbitCamera tmp7=camera();Camera tmp8=tmp7.GetComponent<Camera>();if(tmp23<0)tmp23=tmp8.cullingMask;
@@ -409,6 +459,25 @@ public class AvatarDataFetcher:MonoBehaviour{
   tmp8.cullingMask=(tmp23&~(1<<9))|(1<<8);tmp22.cullingMask=(tmp23&~(1<<8))|(1<<9);
   tmp7.ownScreen=true;tmp10.ownScreen=true;tmp7.Focus(tmp5);tmp10.Focus(tmp6);
  }
+ void rig(GameObject avatar){
+  if(AvatarRig.Build(avatar)==null)return;
+  if(avatar.GetComponent<AvatarIdleMotion>()==null)avatar.AddComponent<AvatarIdleMotion>();
+  if(avatar.GetComponent<AvatarWalkCycle>()==null)avatar.AddComponent<AvatarWalkCycle>();
+  if(GetComponent<AvatarPartInteractor>()==null)gameObject.AddComponent<AvatarPartInteractor>();
+  motion(avatar);
+ }
+ // Idle and walking drive the same bones, so exactly one of them may be enabled at a time.
+ void motion(GameObject avatar){
+  if(avatar==null)return;
+  AvatarIdleMotion idle=avatar.GetComponent<AvatarIdleMotion>();
+  AvatarWalkCycle step=avatar.GetComponent<AvatarWalkCycle>();
+  if(idle!=null)idle.enabled=!walking;
+  if(step!=null)step.enabled=walking;
+ }
+ public void walk(){
+  walking=!walking;motion(tmp1);motion(tmp20);
+  update(walking?"Walking on the spot. Press Walk again to stand still.":"Standing still.");
+ }
  void setLayer(GameObject tmp5,int tmp6){tmp5.layer=tmp6;foreach(Transform tmp7 in tmp5.transform)setLayer(tmp7.gameObject,tmp6);}
  void place(GameObject tmp5){
   if(tmp5==null||!get(tmp5,out Bounds tmp6)||tmp6.size.y<.001f)return;float tmp7=1.78f/tmp6.size.y;tmp5.transform.localScale*=tmp7;
@@ -416,7 +485,8 @@ public class AvatarDataFetcher:MonoBehaviour{
  }
  void clear(){
   if(tmp1!=null){tmp1.SetActive(false);Destroy(tmp1);}if(tmp20!=null){tmp20.SetActive(false);Destroy(tmp20);}
-  tmp2?.Dispose();tmp21?.Dispose();tmp1=null;tmp20=null;tmp2=null;tmp21=null;tmp53=false;tmp56=false;tmp58="";
+  tmp2?.Dispose();tmp21?.Dispose();tmp1=null;tmp20=null;tmp2=null;tmp21=null;
+  dialoguePanelOpen=false;bubblesVisible=false;
   AvatarOrbitCamera tmp5=camera();Camera tmp6=tmp5==null?null:tmp5.GetComponent<Camera>();
   if(tmp6!=null){tmp6.rect=new Rect(0,0,1,1);if(tmp23>=0)tmp6.cullingMask=tmp23;tmp5.ownScreen=false;}
   if(tmp22!=null){Destroy(tmp22.gameObject);tmp22=null;}
