@@ -1,18 +1,20 @@
 """Small window that prepares and starts the Meta Avatar demo.
 
-1. Download Local Models  - TripoSR, u2net and Stable Diffusion (once, online)
-2. Prepare Ollama Models  - pulls Flux and Qwen into Ollama (once, online)
+1. Download Core + Quality - TripoSR, u2net and DreamShaper 8 (once, online)
+2. Prepare Qwen           - pulls the text, vision and chat model into Ollama (once, online)
 3. Start Program          - starts the backend and opens the Unity project
 
-Everything except the GPT buttons works offline after steps 1 and 2.
+Generation and chat work offline after steps 1 and 2 while Ollama is running.
+The German MP list needs internet the first time it is downloaded or refreshed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
-import re
+import signal
 import shutil
 import socket
 import subprocess
@@ -29,14 +31,46 @@ BACKEND_DIR = ROOT / 'backend_python'
 UNITY_DIR = ROOT / 'frontend_unity'
 MODELS_DIR = BACKEND_DIR / 'local_models'
 BACKEND_PORT = 8000
-# Ollama removed image generation after 0.32.5. Newer versions still run
-# Qwen, but Flux fails and the photo buttons fall back to Stable Diffusion.
-LAST_OLLAMA_WITH_IMAGES = (0, 32, 5)
 REQUIRED_MODEL_FILES = [
+    'TripoSR/model/config.yaml',
     'TripoSR/model/model.ckpt',
     'TripoSR/source/tsr/system.py',
+    'TripoSR/source/tsr/utils.py',
+    'TripoSR/source/tsr/models/isosurface.py',
+    'TripoSR/source/tsr/models/nerf_renderer.py',
+    'TripoSR/source/tsr/models/network_utils.py',
+    'TripoSR/source/tsr/models/tokenizers/image.py',
+    'TripoSR/source/tsr/models/tokenizers/triplane.py',
+    'TripoSR/source/tsr/models/transformer/attention.py',
+    'TripoSR/source/tsr/models/transformer/basic_transformer_block.py',
+    'TripoSR/source/tsr/models/transformer/transformer_1d.py',
     'u2net/u2net.onnx',
+    'stable-diffusion-v1-5/model_index.json',
+    'stable-diffusion-v1-5/feature_extractor/preprocessor_config.json',
+    'stable-diffusion-v1-5/scheduler/scheduler_config.json',
+    'stable-diffusion-v1-5/tokenizer/merges.txt',
+    'stable-diffusion-v1-5/tokenizer/special_tokens_map.json',
+    'stable-diffusion-v1-5/tokenizer/tokenizer_config.json',
+    'stable-diffusion-v1-5/tokenizer/vocab.json',
+    'stable-diffusion-v1-5/safety_checker/config.json',
+    'stable-diffusion-v1-5/safety_checker/model.fp16.safetensors',
+    'stable-diffusion-v1-5/text_encoder/config.json',
+    'stable-diffusion-v1-5/text_encoder/model.fp16.safetensors',
+    'stable-diffusion-v1-5/unet/config.json',
     'stable-diffusion-v1-5/unet/diffusion_pytorch_model.fp16.safetensors',
+    'stable-diffusion-v1-5/vae/config.json',
+    'stable-diffusion-v1-5/vae/diffusion_pytorch_model.fp16.safetensors',
+    'dreamshaper-8/model_index.json',
+    'dreamshaper-8/scheduler/scheduler_config.json',
+    'dreamshaper-8/unet/config.json',
+    'dreamshaper-8/unet/diffusion_pytorch_model.fp16.safetensors',
+    'dreamshaper-8/vae/config.json',
+    'dreamshaper-8/vae/diffusion_pytorch_model.fp16.safetensors',
+]
+OPTIONAL_FACE_FILES = [
+    'ip-adapter-face/models/ip-adapter-plus-face_sd15.safetensors',
+    'ip-adapter-face/models/image_encoder/config.json',
+    'ip-adapter-face/models/image_encoder/model.safetensors',
 ]
 
 backend = None
@@ -95,26 +129,33 @@ def python_environment() -> Path:
     if not python.is_file():
         send('status', 'Creating the Python environment...')
         run_logged([base_python(), '-m', 'venv', str(BACKEND_DIR / '.venv')], 'Could not create the Python environment.')
-    check = subprocess.run(native([str(python), '-c', 'import fastapi, multipart, mediapipe, torch, diffusers, rembg, trimesh, skimage']),
+    requirements=BACKEND_DIR/'requirements.txt'
+    wanted=hashlib.sha256(requirements.read_bytes()).hexdigest()
+    stamp=python.parent.parent/'.requirements.sha256'
+    check = subprocess.run(native([str(python), '-c', 'import fastapi,uvicorn,mediapipe,certifi,multipart,numpy,rembg,onnxruntime,torch,transformers,huggingface_hub,omegaconf,einops,trimesh,skimage,imageio,diffusers,accelerate,safetensors']),
                            cwd=BACKEND_DIR, capture_output=True, text=True)
-    if check.returncode != 0:
+    current=stamp.read_text().strip()if stamp.is_file()else ''
+    if check.returncode != 0 or current!=wanted:
         send('status', 'Installing Python packages. The first time takes several minutes...')
-        run_logged([str(python), '-m', 'pip', 'install', '-r', str(BACKEND_DIR / 'requirements.txt')],
+        run_logged([str(python), '-m', 'pip', 'install', '-r', str(requirements)],
                    'Could not install the Python packages. See the log above.')
+        stamp.write_text(wanted)
     return python
 
 
 def models_ready() -> bool:
-    return all((MODELS_DIR / name).is_file() for name in REQUIRED_MODEL_FILES)
+    files =all((MODELS_DIR /name ).is_file ()and (MODELS_DIR /name ).stat ().st_size >0 for name in REQUIRED_MODEL_FILES )
+    dino =any(x.is_file()and x.stat().st_size>0 for x in MODELS_DIR.glob('.cache/hub/models--facebook--dino-vitb16/snapshots/*/config.json'))
+    return files and dino
 
 
 def download_models() -> None:
     try:
         python = python_environment()
-        send('status', 'Downloading local models (about 5 GB). Keep this window open...')
+        send('status', 'Downloading Core + Quality models (about 7 GB total). Keep this window open...')
         run_logged([str(python), '-u', str(BACKEND_DIR / 'prepare_local_models.py'), '--dir', str(MODELS_DIR)],
                    'The model download stopped. Check the internet connection and click the button again.')
-        send('done', 'Local models are ready.')
+        send('done', 'Core + Quality models are ready.')
     except Exception as error:
         send('error', str(error))
 
@@ -131,15 +172,23 @@ def ollama_version(url: str) -> str | None:
         return None
 
 
+def ollama_executable() -> str | None:
+    found=shutil.which('ollama')
+    if found:return found
+    for path in (Path('/Applications/Ollama.app/Contents/Resources/ollama'),Path.home()/'AppData/Local/Programs/Ollama/ollama.exe',Path('C:/Program Files/Ollama/ollama.exe')):
+        if path.is_file():return str(path)
+    return None
+
+
 def ensure_ollama(url: str) -> str:
     """Start `ollama serve` if nothing answers yet. Returns the running version."""
     global ollama_server
     version = ollama_version(url)
     if version:
         return version
-    executable = shutil.which('ollama')
+    executable = ollama_executable()
     if not executable:
-        raise RuntimeError('Ollama is not installed. Install Ollama 0.32.5 from github.com/ollama/ollama/releases.')
+        raise RuntimeError('Ollama is not installed. Install the current Ollama app and try again.')
     ollama_server = subprocess.Popen([executable, 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(40):
         time.sleep(0.5)
@@ -149,24 +198,15 @@ def ensure_ollama(url: str) -> str:
     raise RuntimeError('Ollama did not start. Open the Ollama app and try again.')
 
 
-def version_warning(version: str) -> str:
-    numbers = tuple(int(part) for part in re.findall(r'\d+', version)[:3])
-    if numbers > LAST_OLLAMA_WITH_IMAGES:
-        return (f'Ollama {version} cannot generate images. Flux needs Ollama 0.32.5; '
-                'until then the photo buttons use Stable Diffusion instead.')
-    return ''
-
-
-def prepare_ollama(url: str, image_model: str, text_model: str) -> None:
+def prepare_ollama(url: str, text_model: str) -> None:
     try:
         version = ensure_ollama(url)
-        warning = version_warning(version)
-        if warning:
-            send('log', 'WARNING: ' + warning)
-        for model in (text_model, image_model):
-            send('status', f'Pulling {model} into Ollama...')
-            run_logged([shutil.which('ollama'), 'pull', model], f'Could not pull {model}.')
-        send('done', 'Ollama models are ready.' + (' ' + warning if warning else ''))
+        send('log', f'Ollama {version} is running.')
+        executable=ollama_executable()
+        if not executable:raise RuntimeError('The Ollama service is running, but its command-line tool was not found. Open a terminal and run ollama pull '+text_model+'.')
+        send('status', f'Pulling {text_model} into Ollama...')
+        run_logged([executable, 'pull', text_model], f'Could not pull {text_model}.')
+        send('done', 'Qwen is ready for local photo analysis and chat.')
     except Exception as error:
         send('error', str(error))
 
@@ -224,45 +264,51 @@ def read_backend_output() -> None:
         send('log', line.rstrip())
 
 
-def start_program(api_key: str, url: str, image_model: str, text_model: str) -> None:
+def start_program(api_key: str, hf_token: str, url: str, text_model: str) -> None:
     global backend
     try:
         if not port_free():
             raise RuntimeError(f'Port {BACKEND_PORT} is already in use. Stop the other backend first.')
-        if not models_ready():
-            raise RuntimeError('The local models are missing. Click "Download Local Models" once while online.')
+        local_ready = models_ready()
+        if not local_ready and not api_key:
+            raise RuntimeError('The Core + Quality models are missing. Download them for local generation, or enter an OpenAI API key for Online Photo 3D only.')
+        if local_ready and os.getenv('META_AVATAR_LOCAL_FACE_ADAPTER', 'none').strip().lower() == 'plus':
+            if not all((MODELS_DIR / name).is_file() and (MODELS_DIR / name).stat().st_size > 0 for name in OPTIONAL_FACE_FILES):
+                raise RuntimeError('The optional face adapter is missing. Run python prepare_local_models.py --face-adapter in backend_python first.')
         python = python_environment()
-        try:
-            warning = version_warning(ensure_ollama(url))
-            if warning:
-                send('log', 'WARNING: ' + warning)
-        except RuntimeError as error:
-            send('log', f'WARNING: {error} The Ollama buttons will not work.')
+        if local_ready:
+            try:
+                version = ensure_ollama(url)
+                send('log', f'Ollama {version} is running.')
+            except RuntimeError as error:
+                send('log', f'WARNING: {error} Qwen photo analysis and Chat will not work.')
+        else:
+            send('log', 'Local models are not installed. Only Online Photo 3D generation is available; download the local models for the other generation buttons.')
         send('status', 'Starting the backend...')
         env = os.environ.copy()
         env.update({
             'META_AVATAR_LOCAL_MODELS': str(MODELS_DIR),
-            'META_AVATAR_OLLAMA_IMAGE_API_URL': url,
             'META_AVATAR_OLLAMA_TEXT_API_URL': url,
-            'META_AVATAR_OLLAMA_IMAGE_MODEL': image_model,
             'META_AVATAR_OLLAMA_TEXT_MODEL': text_model,
-            # Everything is on disk already; skip the online checks.
-            'HF_HUB_OFFLINE': '1',
-            'TRANSFORMERS_OFFLINE': '1',
+            'OPENAI_API_KEY': api_key,
+            'HF_TOKEN': hf_token,
+            'HF_HUB_OFFLINE': '0' if api_key else '1',
+            'TRANSFORMERS_OFFLINE': '0' if api_key else '1',
         })
         if api_key:
-            env['OPENAI_API_KEY'] = api_key
+            env['META_AVATAR_OFFLINE'] = '0'
+        tmp = {'start_new_session': True} if os.name != 'nt' else {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP}
         backend = subprocess.Popen(native([str(python), str(BACKEND_DIR / 'main.py')]), cwd=BACKEND_DIR, env=env,
-                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, **tmp)
         threading.Thread(target=read_backend_output, daemon=True).start()
         wait_for_backend()
         if unity_already_open():
-            send('running', 'Backend is ready. Unity is already open; press Play there.')
+            send('running', 'Backend is ready. Unity is already open; press Play there.' + (' Only Online Photo 3D generation is available.' if not local_ready else ''))
             return
         send('status', 'Backend is ready. Opening Unity...')
         subprocess.Popen([str(unity_editor()), '-projectPath', str(UNITY_DIR)], cwd=UNITY_DIR,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        send('running', 'Running. Open SampleScene in Unity and press Play. Keep this window open.')
+        send('running', 'Running. Open SampleScene in Unity and press Play. Keep this window open.' + (' Only Online Photo 3D generation is available.' if not local_ready else ''))
     except Exception as error:
         stop_backend(quiet=True)
         send('error', str(error))
@@ -271,11 +317,24 @@ def start_program(api_key: str, url: str, image_model: str, text_model: str) -> 
 def stop_backend(quiet: bool = False) -> None:
     global backend
     if backend is not None and backend.poll() is None:
-        backend.terminate()
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(backend.pid), '/T', '/F'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            try:
+                os.killpg(backend.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         try:
             backend.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            backend.kill()
+            if os.name == 'nt':
+                backend.kill()
+            else:
+                try:
+                    os.killpg(backend.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
     backend = None
     if not quiet:
         send('stopped', 'Backend stopped.')
@@ -284,8 +343,8 @@ def stop_backend(quiet: bool = False) -> None:
 def main() -> None:
     window = tk.Tk()
     window.title('Meta Avatar Launcher')
-    window.geometry('700x640')
-    window.minsize(580, 560)
+    window.geometry('700x680')
+    window.minsize(580, 590)
     frame = tk.Frame(window, padx=18, pady=16)
     frame.pack(fill='both', expand=True)
 
@@ -297,15 +356,15 @@ def main() -> None:
         return entry
 
     key_entry = field('OpenAI API key (only for the GPT buttons, not saved)', os.getenv('OPENAI_API_KEY', ''), secret=True)
+    hf_entry = field('Hugging Face token (optional for online 3D quota, not saved)', os.getenv('HF_TOKEN', ''), secret=True)
     url_entry = field('Ollama URL', 'http://127.0.0.1:11434/api/generate')
-    image_entry = field('Ollama image model', 'x/flux2-klein:4b')
-    text_entry = field('Ollama text and vision model', 'qwen3.5:4b')
+    text_entry = field('Local text, vision and chat model', 'qwen3.5:0.8b')
 
     setup_row = tk.Frame(frame)
     setup_row.pack(fill='x', pady=(4, 6))
-    download_button = tk.Button(setup_row, text='1. Download Local Models', height=2)
+    download_button = tk.Button(setup_row, text='1. Download Core + Quality', height=2)
     download_button.pack(side='left', fill='x', expand=True)
-    ollama_button = tk.Button(setup_row, text='2. Prepare Ollama Models', height=2)
+    ollama_button = tk.Button(setup_row, text='2. Prepare Qwen', height=2)
     ollama_button.pack(side='left', fill='x', expand=True, padx=(10, 0))
 
     run_row = tk.Frame(frame)
@@ -315,7 +374,7 @@ def main() -> None:
     stop_button = tk.Button(run_row, text='Stop Backend', height=2, state='disabled')
     stop_button.pack(side='left', fill='x', expand=True, padx=(10, 0))
 
-    first_hint = 'Ready. Click Start Program.' if models_ready() else 'First time: click 1 and 2 while online, then Start Program.'
+    first_hint = 'Ready. Click Start Program.' if models_ready() else 'Download local models for local generation, or enter an OpenAI key for Online Photo 3D only.'
     status = tk.StringVar(value=first_hint)
     tk.Label(frame, textvariable=status, anchor='w', justify='left', wraplength=650).pack(fill='x', pady=(12, 6))
     log = tk.Text(frame, height=14, state='disabled', wrap='word')
@@ -333,8 +392,8 @@ def main() -> None:
         log.see('end')
         log.config(state='disabled')
 
-    def ollama_settings() -> tuple[str, str, str]:
-        return url_entry.get().strip(), image_entry.get().strip(), text_entry.get().strip()
+    def ollama_settings() -> tuple[str, str]:
+        return url_entry.get().strip(), text_entry.get().strip()
 
     def in_background(target, *args) -> None:
         set_busy(True)
@@ -342,8 +401,8 @@ def main() -> None:
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def start() -> None:
-        url, image_model, text_model = ollama_settings()
-        in_background(start_program, key_entry.get().strip(), url, image_model, text_model)
+        url, text_model = ollama_settings()
+        in_background(start_program, key_entry.get().strip(), hf_entry.get().strip(), url, text_model)
 
     def stop() -> None:
         stop_button.config(state='disabled')

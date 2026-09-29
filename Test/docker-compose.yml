@@ -9,10 +9,13 @@ services:
       - "8000:9714"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
       META_AVATAR_PUBLIC_BASE_URL: ${META_AVATAR_PUBLIC_BASE_URL:-http://127.0.0.1:8000}
-      META_AVATAR_OLLAMA_IMAGE_MODEL: ${META_AVATAR_OLLAMA_IMAGE_MODEL:-x/flux2-klein:4b}
-      META_AVATAR_OLLAMA_TEXT_MODEL: ${META_AVATAR_OLLAMA_TEXT_MODEL:-qwen3.5:4b}
+      META_AVATAR_OLLAMA_TEXT_MODEL: ${META_AVATAR_OLLAMA_TEXT_MODEL:-qwen3.5:0.8b}
       META_AVATAR_MC_RESOLUTION: ${META_AVATAR_MC_RESOLUTION:-256}
+      META_AVATAR_OFFLINE: ${META_AVATAR_OFFLINE:-0}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-0}
     volumes:
       - meta-avatar-models:/data/models
       # Prepared once on the host with prepare_local_models.py.

@@ -10,11 +10,14 @@ onnxruntime>=1.18,<2
 torch>=2.2,<3
 transformers>=4.41,<5
 huggingface-hub>=0.28,<2
+gradio_client==2.5.0
 omegaconf>=2.3,<3
 einops>=0.7,<1
 trimesh>=4,<5
 scikit-image>=0.22,<1
+scipy>=1.10,<2
 imageio>=2.34,<3
 diffusers>=0.31,<1
 accelerate>=0.31,<2
 safetensors>=0.4,<1
+psutil>=5.9,<8

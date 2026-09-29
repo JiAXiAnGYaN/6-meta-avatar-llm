@@ -284,7 +284,7 @@ MonoBehaviour:
   nameInput: {fileID: 1789034056}
   statusText: {fileID: 878773607}
   backendUrl: http://127.0.0.1:8000/api/avatar
-  timeout: 1800
+  timeout: 7200
   spawnPoint: {fileID: 540050044}
 --- !u!4 &540050044
 Transform:
@@ -810,7 +810,7 @@ Camera:
     height: 1
   near clip plane: 0.3
   far clip plane: 1000
-  field of view: 60
+  field of view: 45
   orthographic: 0
   orthographic size: 5
   m_Depth: -1
